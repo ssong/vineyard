@@ -64,8 +64,8 @@ def handle_build_command(respond: Respond, command: dict):
     )
 
     try:
-        # Create handoff (in production, this would load from research agent output)
-        handoff = _create_demo_handoff(project_id, user_id)
+        # Create handoff from Linear project
+        handoff = _create_handoff_from_project(project_id, user_id)
 
         # Create factory run
         state = create_factory_run(handoff)
@@ -143,33 +143,52 @@ def _run_factory_async(state, channel_id: str):
         )
 
 
-def _create_demo_handoff(project_id: str, user_id: str) -> FactoryHandoff:
-    """Create a demo handoff for testing."""
+def _generate_slug(name: str) -> str:
+    """Generate a URL-safe slug from a name."""
+    import re
+    slug = name.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)
+    slug = re.sub(r'[\s_]+', '-', slug)
+    slug = re.sub(r'-+', '-', slug)
+    return slug[:50]
+
+
+def _create_handoff_from_project(project_id: str, user_id: str) -> FactoryHandoff:
+    """Create a handoff from a Linear project."""
+    from src.tools.linear import get_project
+
+    # Fetch project details from Linear
+    project = get_project(project_id)
+    project_name = project.get("name", "Unnamed Project") if project else "Unnamed Project"
+    project_url = project.get("url", f"https://linear.app/project/{project_id}") if project else f"https://linear.app/project/{project_id}"
+    project_slug = _generate_slug(project_name)
+    project_description = (project.get("description") or "") if project else ""
+
     return FactoryHandoff(
         handoff_id=str(uuid.uuid4()),
         triggered_at=datetime.utcnow(),
         triggered_by=user_id,
-        research_report_id="demo-report",
-        opportunity_id="demo-opp",
+        research_report_id=f"project-{project_id}",
+        opportunity_id=project_id,
         linear_project_id=project_id,
-        linear_project_url=f"https://linear.app/team/project/{project_id}",
+        linear_project_url=project_url,
         opportunity=OpportunitySummary(
-            name="Demo Product",
-            slug="demo-product",
-            one_liner="A demo product for testing the factory",
-            detailed_description="This is a demo product used to test the factory pipeline.",
+            name=project_name,
+            slug=project_slug,
+            one_liner=project_description or f"Building {project_name}",
+            detailed_description=project_description or f"Factory build for {project_name}",
             category="automation",
             target_segment="smb",
             business_model="subscription_monthly",
-            problem_statement="Demo problem statement",
+            problem_statement=f"Building {project_name}",
             current_solutions=["Manual process"],
             pain_intensity=7,
             frequency="daily",
-            target_market_description="Small business owners",
+            target_market_description="Target users",
             geographic_focus=["global"],
-            direct_competitors=["Competitor A", "Competitor B"],
-            competitor_weaknesses=["Too expensive", "Complex"],
-            differentiation_angle="Simple and affordable",
+            direct_competitors=[],
+            competitor_weaknesses=[],
+            differentiation_angle="Unique approach",
             build_complexity="medium",
             estimated_build_weeks=4,
             key_technical_components=["API", "Dashboard"],

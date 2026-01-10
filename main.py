@@ -358,6 +358,17 @@ def _post_research_results(channel_id: str, user_id: str, report, pdf_path: str,
     )
 
 
+def _generate_slug(name: str) -> str:
+    """Generate a URL-safe slug from a name."""
+    import re
+    # Convert to lowercase, replace spaces with hyphens, remove non-alphanumeric
+    slug = name.lower().strip()
+    slug = re.sub(r'[^\w\s-]', '', slug)
+    slug = re.sub(r'[\s_]+', '-', slug)
+    slug = re.sub(r'-+', '-', slug)
+    return slug[:50]  # Limit length for Slack channel names
+
+
 def _handle_factory_build(respond: Respond, command: dict, shared_app: App):
     """Handle /vineyard build - delegates to factory logic."""
     import uuid
@@ -381,11 +392,6 @@ def _handle_factory_build(respond: Respond, command: dict, shared_app: App):
         )
         return
 
-    respond(
-        text=f"🏭 *Factory starting for project {project_id}*\n"
-        "_This will take a few minutes. I'll post updates as each phase completes._"
-    )
-
     try:
         from src.models import (
             BuildPreferences,
@@ -399,33 +405,52 @@ def _handle_factory_build(respond: Respond, command: dict, shared_app: App):
         from src.slack.channels import create_opportunity_channels
         from src.orchestrator.persistence import save_state
         from src.slack.notifications import send_checkpoint_request
+        from src.tools.linear import get_project
 
-        # Create demo handoff
+        # Fetch project details from Linear
+        project = get_project(project_id)
+        if not project:
+            respond(
+                text=f"❌ Project not found: `{project_id}`\n\n"
+                "_Use `/vineyard list` to see available projects._"
+            )
+            return
+
+        project_name = project.get("name", "Unnamed Project")
+        project_url = project.get("url", f"https://linear.app/project/{project_id}")
+        project_slug = _generate_slug(project_name)
+
+        respond(
+            text=f"🏭 *Factory starting for {project_name}*\n"
+            "_This will take a few minutes. I'll post updates as each phase completes._"
+        )
+
+        # Create handoff with actual project details
         handoff = FactoryHandoff(
             handoff_id=str(uuid.uuid4()),
             triggered_at=datetime.utcnow(),
             triggered_by=user_id,
-            research_report_id="demo-report",
-            opportunity_id="demo-opp",
+            research_report_id=f"project-{project_id}",
+            opportunity_id=project_id,
             linear_project_id=project_id,
-            linear_project_url=f"https://linear.app/team/project/{project_id}",
+            linear_project_url=project_url,
             opportunity=OpportunitySummary(
-                name="Demo Product",
-                slug="demo-product",
-                one_liner="A demo product for testing the factory",
-                detailed_description="This is a demo product used to test the factory pipeline.",
+                name=project_name,
+                slug=project_slug,
+                one_liner=project.get("description", f"Building {project_name}") or f"Building {project_name}",
+                detailed_description=project.get("description", "") or f"Factory build for {project_name}",
                 category="automation",
                 target_segment="smb",
                 business_model="subscription_monthly",
-                problem_statement="Demo problem statement",
+                problem_statement=f"Building {project_name}",
                 current_solutions=["Manual process"],
                 pain_intensity=7,
                 frequency="daily",
-                target_market_description="Small business owners",
+                target_market_description="Target users",
                 geographic_focus=["global"],
-                direct_competitors=["Competitor A", "Competitor B"],
-                competitor_weaknesses=["Too expensive", "Complex"],
-                differentiation_angle="Simple and affordable",
+                direct_competitors=[],
+                competitor_weaknesses=[],
+                differentiation_angle="Unique approach",
                 build_complexity="medium",
                 estimated_build_weeks=4,
                 key_technical_components=["API", "Dashboard"],
