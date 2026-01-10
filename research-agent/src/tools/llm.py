@@ -21,8 +21,8 @@ _client = None
 _tokenizer = None
 
 # Model identifiers
-MODEL_OPUS = "claude-opus-4-20250514"  # For complex reasoning, synthesis, important decisions
-MODEL_SONNET = "claude-sonnet-4-20250514"  # For structured tasks, following templates
+MODEL_OPUS = "claude-opus-4-5-20251101"  # For complex reasoning, synthesis, important decisions
+MODEL_SONNET = "claude-sonnet-4-5-20250929"  # For structured tasks, following templates
 
 # Claude model context limits (input + output)
 MODEL_LIMITS = {
