@@ -1,6 +1,7 @@
 """FastAPI server for webhook endpoints."""
 
 import logging
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -15,10 +16,21 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 # Rate limiter configuration
+# Use Redis for rate limiting if available, otherwise fall back to in-memory
+REDIS_URL = os.getenv("REDIS_URL")
+
+def _get_rate_limit_storage() -> str:
+    """Get the storage URI for rate limiting."""
+    if not REDIS_URL:
+        return "memory://"
+    # slowapi expects redis:// format (not rediss:// for TLS)
+    # For TLS connections, you may need to configure Redis separately
+    return REDIS_URL
+
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["100/minute"],  # Default rate limit
-    storage_uri="memory://",  # Use in-memory storage (consider Redis for production)
+    storage_uri=_get_rate_limit_storage(),
 )
 
 
@@ -26,7 +38,8 @@ limiter = Limiter(
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info("Starting Vineyard Factory API server...")
-    logger.info("Rate limiting enabled: 100 requests/minute per IP")
+    storage_type = "Redis" if REDIS_URL else "in-memory"
+    logger.info(f"Rate limiting enabled: 100 requests/minute per IP (storage: {storage_type})")
     yield
     logger.info("Shutting down Vineyard Factory API server...")
 

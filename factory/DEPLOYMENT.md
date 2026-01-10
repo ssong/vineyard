@@ -52,9 +52,6 @@ apt update && apt upgrade -y
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 
-# Install Docker Compose
-apt install docker-compose-plugin -y
-
 # Create app user
 useradd -m -s /bin/bash vineyard
 usermod -aG docker vineyard
@@ -62,6 +59,11 @@ usermod -aG docker vineyard
 # Create app directory
 mkdir -p /opt/vineyard
 chown vineyard:vineyard /opt/vineyard
+
+# Create state directory with secure permissions
+mkdir -p /var/lib/vineyard-factory/state
+chown vineyard:vineyard /var/lib/vineyard-factory/state
+chmod 700 /var/lib/vineyard-factory/state
 ```
 
 ### 1.3 Configure Firewall
@@ -236,13 +238,22 @@ SLACK_APP_TOKEN=xapp-your-app-token
 # Anthropic
 ANTHROPIC_API_KEY=sk-ant-your-key
 
-# Linear
+# Linear (REQUIRED for webhooks)
 LINEAR_API_KEY=lin_api_your-key
 LINEAR_WEBHOOK_SECRET=your-webhook-secret-from-linear
 
 # API Server
 API_HOST=0.0.0.0
 API_PORT=8000
+
+# State persistence (secure directory)
+FACTORY_STATE_DIR=/var/lib/vineyard-factory/state
+
+# Storage backend: "file" (default) or "redis"
+# FACTORY_STORAGE_BACKEND=file
+
+# Redis (optional - for production scalability)
+# REDIS_URL=redis://localhost:6379/0
 
 # Optional
 LOG_LEVEL=INFO
@@ -251,51 +262,43 @@ EOF
 chmod 600 /opt/vineyard/factory/.env
 ```
 
-### 4.3 Docker Compose Setup
-
-```bash
-cat > /opt/vineyard/factory/docker-compose.yml << 'EOF'
-version: '3.8'
-
-services:
-  factory:
-    build: .
-    container_name: vineyard-factory
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
-    env_file:
-      - .env
-    volumes:
-      - factory-data:/app/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
-volumes:
-  factory-data:
-EOF
-```
-
-### 4.4 Build and Start
+### 4.3 Build Docker Image
 
 ```bash
 cd /opt/vineyard/factory
 
-# Build image
-docker compose build
+# Build the image
+docker build -t vineyard-factory:latest .
 
-# Start in background
-docker compose up -d
-
-# Check logs
-docker compose logs -f
+# Verify image was created
+docker images | grep vineyard-factory
 ```
 
-### 4.5 Create Systemd Service (Alternative to Docker Compose)
+### 4.4 Run Container
+
+```bash
+# Run the factory container
+docker run -d \
+  --name vineyard-factory \
+  --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  --env-file /opt/vineyard/factory/.env \
+  -v /var/lib/vineyard-factory/state:/var/lib/vineyard-factory/state \
+  --health-cmd="curl -f http://localhost:8000/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=10s \
+  --health-retries=3 \
+  --health-start-period=10s \
+  vineyard-factory:latest
+
+# Verify container is running
+docker ps | grep vineyard-factory
+
+# Check logs
+docker logs -f vineyard-factory
+```
+
+### 4.5 Create Systemd Service
 
 ```bash
 # As root
@@ -308,11 +311,23 @@ Requires=docker.service
 [Service]
 Type=simple
 User=vineyard
-WorkingDirectory=/opt/vineyard/factory
-ExecStart=/usr/bin/docker compose up
-ExecStop=/usr/bin/docker compose down
 Restart=always
 RestartSec=10
+
+# Stop and remove existing container (if any)
+ExecStartPre=-/usr/bin/docker stop vineyard-factory
+ExecStartPre=-/usr/bin/docker rm vineyard-factory
+
+# Start the container
+ExecStart=/usr/bin/docker run \
+  --name vineyard-factory \
+  -p 127.0.0.1:8000:8000 \
+  --env-file /opt/vineyard/factory/.env \
+  -v /var/lib/vineyard-factory/state:/var/lib/vineyard-factory/state \
+  vineyard-factory:latest
+
+# Stop container on service stop
+ExecStop=/usr/bin/docker stop vineyard-factory
 
 [Install]
 WantedBy=multi-user.target
@@ -321,6 +336,106 @@ EOF
 systemctl daemon-reload
 systemctl enable vineyard-factory
 systemctl start vineyard-factory
+
+# Check status
+systemctl status vineyard-factory
+```
+
+### 4.6 Redis Setup (Optional)
+
+Redis is optional but recommended for production deployments. It provides:
+- Persistent state storage with TTL
+- Shared state across multiple instances (if scaling horizontally)
+- Better performance for high-volume operations
+
+#### Option A: Install Redis on the VPS
+
+```bash
+# Install Redis
+apt install redis-server -y
+
+# Configure Redis for security
+cat >> /etc/redis/redis.conf << 'EOF'
+
+# Bind to localhost only
+bind 127.0.0.1
+
+# Require password
+requirepass your-secure-redis-password
+
+# Disable dangerous commands
+rename-command FLUSHDB ""
+rename-command FLUSHALL ""
+rename-command DEBUG ""
+rename-command CONFIG ""
+EOF
+
+# Restart Redis
+systemctl restart redis-server
+systemctl enable redis-server
+
+# Verify Redis is running
+redis-cli -a your-secure-redis-password ping
+# Should return: PONG
+```
+
+Update your `.env` file:
+
+```bash
+# Enable Redis storage
+FACTORY_STORAGE_BACKEND=redis
+REDIS_URL=redis://:your-secure-redis-password@127.0.0.1:6379/0
+```
+
+#### Option B: Use Managed Redis (Recommended for Production)
+
+For production, consider using a managed Redis service:
+- **Hetzner**: No native Redis, but you can use Docker
+- **Upstash**: Serverless Redis with generous free tier
+- **Redis Cloud**: Managed Redis by Redis Labs
+- **AWS ElastiCache** / **GCP Memorystore**: If using cloud providers
+
+Example with Upstash:
+
+```bash
+# In your .env file
+FACTORY_STORAGE_BACKEND=redis
+REDIS_URL=rediss://default:your-password@your-endpoint.upstash.io:6379
+```
+
+Note: Use `rediss://` (with double 's') for TLS connections.
+
+#### Option C: Redis in Docker
+
+```bash
+# Create Redis data directory
+mkdir -p /var/lib/redis-data
+chown 999:999 /var/lib/redis-data
+
+# Run Redis container
+docker run -d \
+  --name vineyard-redis \
+  --restart unless-stopped \
+  -p 127.0.0.1:6379:6379 \
+  -v /var/lib/redis-data:/data \
+  redis:7-alpine \
+  redis-server --appendonly yes --requirepass your-secure-redis-password
+
+# Update .env
+FACTORY_STORAGE_BACKEND=redis
+REDIS_URL=redis://:your-secure-redis-password@127.0.0.1:6379/0
+```
+
+#### Verify Redis Connection
+
+```bash
+# Test from container
+docker exec vineyard-factory python -c "
+import redis
+import os
+r = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'))
+print('Redis connected:', r.ping())
+"
 ```
 
 ---
@@ -367,21 +482,33 @@ curl https://factory.yourdomain.com/webhooks/linear/status
 ### 6.1 View Logs
 
 ```bash
-# All logs
-docker compose logs -f
+# Follow all logs
+docker logs -f vineyard-factory
+
+# Last 100 lines
+docker logs --tail 100 vineyard-factory
 
 # Filter by component
-docker compose logs -f | grep -E "(webhook|Linear|retry)"
+docker logs vineyard-factory 2>&1 | grep -E "(webhook|Linear|retry)"
+
+# With timestamps
+docker logs -t vineyard-factory
 ```
 
 ### 6.2 Health Check
 
 ```bash
+# Container health status
+docker inspect --format='{{.State.Health.Status}}' vineyard-factory
+
 # Local health check
 curl http://localhost:8000/health
 
 # External health check
-curl https://factory.yourdomain.com/health
+curl https://factory.ssong.dev/health
+
+# Webhook status
+curl https://factory.ssong.dev/webhooks/linear/status
 ```
 
 ### 6.3 Update Deployment
@@ -392,16 +519,76 @@ cd /opt/vineyard/factory
 # Pull latest code
 git pull
 
-# Rebuild and restart
-docker compose build
-docker compose up -d
+# Rebuild image
+docker build -t vineyard-factory:latest .
+
+# Stop and remove old container
+docker stop vineyard-factory
+docker rm vineyard-factory
+
+# Start new container
+docker run -d \
+  --name vineyard-factory \
+  --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  --env-file /opt/vineyard/factory/.env \
+  -v /var/lib/vineyard-factory/state:/var/lib/vineyard-factory/state \
+  --health-cmd="curl -f http://localhost:8000/health || exit 1" \
+  --health-interval=30s \
+  --health-timeout=10s \
+  --health-retries=3 \
+  vineyard-factory:latest
+
+# Or if using systemd
+systemctl restart vineyard-factory
 ```
 
 ### 6.4 Backup State
 
 ```bash
-# Factory state is stored in the Docker volume
-docker run --rm -v vineyard-factory_factory-data:/data -v $(pwd):/backup alpine tar czf /backup/factory-backup.tar.gz /data
+# Backup state directory
+tar czf ~/factory-state-backup-$(date +%Y%m%d).tar.gz /var/lib/vineyard-factory/state
+
+# Restore state
+tar xzf factory-state-backup-YYYYMMDD.tar.gz -C /
+```
+
+### 6.5 Container Management
+
+```bash
+# Restart container
+docker restart vineyard-factory
+
+# Stop container
+docker stop vineyard-factory
+
+# Start container
+docker start vineyard-factory
+
+# Remove container (data persists in state directory)
+docker rm vineyard-factory
+
+# View container resource usage
+docker stats vineyard-factory
+
+# Execute command inside container
+docker exec -it vineyard-factory /bin/bash
+
+# Check container environment
+docker exec vineyard-factory env | grep -E "(SLACK|LINEAR|API)"
+```
+
+### 6.6 Cleanup
+
+```bash
+# Remove old images
+docker image prune -f
+
+# Remove all unused images (caution)
+docker image prune -a
+
+# View disk usage
+docker system df
 ```
 
 ---
@@ -484,15 +671,21 @@ Simply drag a failed issue back to "Todo" or "In Progress" in Linear's board vie
 
 1. Check Cloudflare is proxying correctly:
    ```bash
-   curl -I https://factory.yourdomain.com/health
+   curl -I https://factory.ssong.dev/health
    # Should show cf-ray header
    ```
 
-2. Check Linear webhook status in Linear Settings → API → Webhooks
+2. Verify webhook secret is configured:
+   ```bash
+   curl https://factory.ssong.dev/webhooks/linear/status
+   # Should show: "webhook_secret_configured": true
+   ```
+
+3. Check Linear webhook status in Linear Settings → API → Webhooks
    - Look for delivery failures
    - Check the signing secret matches
 
-3. Check Nginx logs:
+4. Check Nginx logs:
    ```bash
    tail -f /var/log/nginx/error.log
    ```
@@ -501,12 +694,24 @@ Simply drag a failed issue back to "Todo" or "In Progress" in Linear's board vie
 
 1. Check Docker logs:
    ```bash
-   docker compose logs factory
+   docker logs vineyard-factory
    ```
 
-2. Verify environment variables:
+2. Check container status:
    ```bash
-   docker compose exec factory env | grep -E "(SLACK|LINEAR|API)"
+   docker ps -a | grep vineyard-factory
+   docker inspect vineyard-factory | grep -A 5 "State"
+   ```
+
+3. Verify environment variables:
+   ```bash
+   docker exec vineyard-factory env | grep -E "(SLACK|LINEAR|API)"
+   ```
+
+4. Check state directory permissions:
+   ```bash
+   ls -la /var/lib/vineyard-factory/state
+   # Should be owned by vineyard user with mode 700
    ```
 
 ### SSL/TLS errors
@@ -514,6 +719,72 @@ Simply drag a failed issue back to "Todo" or "In Progress" in Linear's board vie
 1. Verify Cloudflare SSL mode is "Full (strict)"
 2. Check origin certificate hasn't expired
 3. Ensure certificate hostnames match
+
+### Rate limiting issues
+
+1. Check if you're being rate limited:
+   ```bash
+   curl -I https://factory.ssong.dev/webhooks/linear/status
+   # Look for 429 status or X-RateLimit headers
+   ```
+
+2. Default limits:
+   - Global: 100 requests/minute per IP
+   - Webhook endpoint: 30 requests/minute per IP
+
+### Redis connection issues
+
+1. Check Redis is running:
+   ```bash
+   # If using system Redis
+   systemctl status redis-server
+
+   # If using Docker Redis
+   docker ps | grep redis
+   docker logs vineyard-redis
+   ```
+
+2. Test Redis connectivity:
+   ```bash
+   # Local Redis
+   redis-cli -a your-password ping
+
+   # From factory container
+   docker exec vineyard-factory python -c "
+   import redis, os
+   r = redis.from_url(os.environ.get('REDIS_URL'))
+   print('Ping:', r.ping())
+   print('Keys:', r.keys('factory:*'))
+   "
+   ```
+
+3. Check Redis URL format:
+   ```bash
+   # Standard format
+   redis://:password@host:port/db
+
+   # TLS format (for managed Redis)
+   rediss://:password@host:port/db
+   ```
+
+4. Verify storage backend:
+   ```bash
+   docker exec vineyard-factory env | grep -E "(REDIS|STORAGE)"
+   # Should show:
+   # FACTORY_STORAGE_BACKEND=redis
+   # REDIS_URL=redis://...
+   ```
+
+5. Check state files exist (file backend fallback):
+   ```bash
+   ls -la /var/lib/vineyard-factory/state/
+   ```
+
+6. Redis memory issues:
+   ```bash
+   redis-cli -a your-password INFO memory
+   # Check used_memory_human and maxmemory
+   ```
 
 ---
 
@@ -527,3 +798,5 @@ Simply drag a failed issue back to "Todo" or "In Progress" in Linear's board vie
 - [ ] Environment file permissions (600)
 - [ ] Non-root user running containers
 - [ ] Regular security updates scheduled
+- [ ] Redis password configured (if using Redis)
+- [ ] Redis bound to localhost only (if local)
