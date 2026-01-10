@@ -273,11 +273,14 @@ def generate(
 
     # Add extended thinking if requested (for complex reasoning tasks)
     if use_extended_thinking:
+        # Anthropic requires max_tokens > budget_tokens
+        # Set max_tokens to thinking_budget + original max_tokens for output
+        request_params["max_tokens"] = thinking_budget + max_tokens
         request_params["thinking"] = {
             "type": "enabled",
             "budget_tokens": thinking_budget
         }
-        logger.debug(f"Extended thinking enabled with budget: {thinking_budget} tokens")
+        logger.debug(f"Extended thinking enabled with budget: {thinking_budget} tokens, max_tokens: {request_params['max_tokens']}")
 
     try:
         message = client.messages.create(**request_params)
