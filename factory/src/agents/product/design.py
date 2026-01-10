@@ -93,7 +93,9 @@ Write a complete PRD in markdown format with:
 """
 
         try:
-            return llm.generate(DESIGN_AGENT_PROMPT, user_prompt)
+            return llm.generate(
+                DESIGN_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
         except Exception as e:
             self.logger.error(f"Failed to generate PRD: {e}")
             return f"# {opp.name} PRD\n\n## Problem Statement\n{opp.problem_statement}"
@@ -129,7 +131,9 @@ Include flows for:
 """
 
         try:
-            result = llm.generate_json(DESIGN_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                DESIGN_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             return result.get("flows", [])
         except Exception as e:
             self.logger.error(f"Failed to generate user flows: {e}")
@@ -209,7 +213,9 @@ Include P0 (MVP), P1 (post-launch), and P2 (future) features.
 """
 
         try:
-            result = llm.generate_json(DESIGN_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                DESIGN_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             features = []
 
             for f in result.get("features", []):
@@ -252,7 +258,9 @@ Generate JSON with UI copy:
 """
 
         try:
-            return llm.generate_json(DESIGN_AGENT_PROMPT, user_prompt)
+            return llm.generate_json(
+                DESIGN_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
         except Exception as e:
             self.logger.error(f"Failed to generate UI copy: {e}")
             return {"headline": opp.one_liner}

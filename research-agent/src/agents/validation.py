@@ -87,7 +87,9 @@ Provide a JSON response with:
 }}"""
 
         try:
-            result = llm.generate_json(VALIDATION_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                VALIDATION_AGENT_PROMPT, user_prompt, model=llm.MODEL_SONNET
+            )
 
             four_u_data = result.get("four_u", {})
             graveyard_data = result.get("graveyard", {})

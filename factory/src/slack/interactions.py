@@ -1,14 +1,14 @@
 """Slack interaction handlers for factory."""
 
 import logging
-import re
 
 from slack_bolt import Ack
 
 from src.models import Phase, PhaseStatus
-from src.orchestrator import approve_checkpoint, load_state, run_factory
+from src.orchestrator.runner import approve_checkpoint, resume_factory
+from src.orchestrator.persistence import load_state
 from src.slack.app import app
-from src.slack.notifications import send_factory_complete, send_factory_error
+from src.slack.notifications import send_factory_complete
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ def handle_approve_checkpoint(ack: Ack, body: dict, respond):
             return
 
         phase = Phase(phase_value)
+        channel_id = body["channel"]["id"]
 
         # Approve and continue
         respond(
@@ -37,10 +38,8 @@ def handle_approve_checkpoint(ack: Ack, body: dict, respond):
             replace_original=True,
         )
 
-        # Continue execution
-        result = approve_checkpoint(state, phase)
-
-        channel_id = body["channel"]["id"]
+        # Continue execution with channel for notifications
+        result = approve_checkpoint(state, phase, channel_id)
 
         if result.completed_at:
             send_factory_complete(channel_id, result)
@@ -61,8 +60,60 @@ def handle_stop_factory(ack: Ack, body: dict, respond):
     execution_id = body["actions"][0]["value"]
 
     respond(
-        text="🛑 Factory stopped. You can resume later from Linear.",
+        text="🛑 Factory stopped. You can resume later with the Resume button.",
         replace_original=True,
     )
 
     logger.info(f"Factory {execution_id} stopped by user")
+
+
+@app.action("resume_factory")
+def handle_resume_factory(ack: Ack, body: dict, respond):
+    """Handle factory resume button click."""
+    ack()
+
+    execution_id = body["actions"][0]["value"]
+    channel_id = body["channel"]["id"]
+
+    respond(
+        text="🔄 Resuming factory...",
+        replace_original=True,
+    )
+
+    try:
+        result = resume_factory(execution_id, channel_id)
+
+        if not result:
+            respond(
+                text="⚠️ Could not find factory run. It may have expired.",
+                replace_original=False,
+            )
+            return
+
+        if result.completed_at:
+            send_factory_complete(channel_id, result)
+            respond(
+                text="✅ Factory resumed and completed!",
+                replace_original=False,
+            )
+        elif result.phase_statuses.get(result.current_phase.value) == PhaseStatus.AWAITING_APPROVAL:
+            from src.slack.notifications import send_checkpoint_request
+            send_checkpoint_request(channel_id, result)
+        elif result.phase_statuses.get(result.current_phase.value) == PhaseStatus.FAILED:
+            # Still failing, notification already sent by run_factory
+            pass
+        else:
+            respond(
+                text=f"✅ Factory resumed! Currently at: {result.current_phase.value}",
+                replace_original=False,
+            )
+
+    except Exception as e:
+        logger.exception("Failed to resume factory")
+        respond(text=f"❌ Failed to resume: {str(e)}")
+
+
+@app.action("view_linear")
+def handle_view_linear(ack: Ack, body: dict, respond):
+    """Handle view Linear button click (no-op, button is a link)."""
+    ack()

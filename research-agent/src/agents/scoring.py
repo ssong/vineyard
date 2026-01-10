@@ -97,7 +97,9 @@ Provide a JSON response with:
 }}"""
 
         try:
-            result = llm.generate_json(SCORING_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                SCORING_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
 
             forecast_data = result.get("revenue_forecast", {})
             scores = result.get("scores", {})

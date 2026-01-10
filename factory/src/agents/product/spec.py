@@ -101,7 +101,9 @@ Write a technical spec in markdown with:
 """
 
         try:
-            return llm.generate(SPEC_AGENT_PROMPT, user_prompt)
+            return llm.generate(
+                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
         except Exception as e:
             self.logger.error(f"Failed to generate tech spec: {e}")
             return f"# {opp.name} Technical Specification\n\n[Generation failed]"
@@ -151,7 +153,9 @@ Include:
 """
 
         try:
-            result = llm.generate_json(SPEC_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             endpoints = []
 
             for e in result.get("endpoints", []):
@@ -204,7 +208,9 @@ Include tables for:
 """
 
         try:
-            result = llm.generate_json(SPEC_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             tables = []
 
             for t in result.get("tables", []):
@@ -299,7 +305,9 @@ Include tasks for:
 """
 
         try:
-            result = llm.generate_json(SPEC_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             tasks = []
 
             for t in result.get("tasks", []):

@@ -87,7 +87,9 @@ For each persona, provide JSON array with:
 }}"""
 
         try:
-            result = llm.generate_json(RESEARCH_ENRICHMENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                RESEARCH_ENRICHMENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             personas = []
 
             for p in result.get("personas", [])[:5]:
@@ -148,7 +150,9 @@ For each competitor, provide JSON:
 }}"""
 
         try:
-            result = llm.generate_json(RESEARCH_ENRICHMENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                RESEARCH_ENRICHMENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
             competitors = []
 
             for c in result.get("competitors", []):
@@ -223,7 +227,9 @@ Provide JSON:
 }}"""
 
         try:
-            result = llm.generate_json(RESEARCH_ENRICHMENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                RESEARCH_ENRICHMENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
 
             return SEOStrategy(
                 primary_keywords=result.get("primary_keywords", []),
@@ -261,7 +267,9 @@ Format: "For [target customer] who [statement of need], [product name] is a [pro
 """
 
         try:
-            return llm.generate(RESEARCH_ENRICHMENT_PROMPT, user_prompt)
+            return llm.generate(
+                RESEARCH_ENRICHMENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
         except Exception as e:
             self.logger.error(f"Failed to generate positioning: {e}")
             return f"{opp.name} helps {opp.target_segment} by {opp.differentiation_angle}"

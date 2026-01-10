@@ -1,4 +1,4 @@
-"""Factory orchestrator - phase execution and state management."""
+"""Factory orchestrator - phase execution, state management, and recovery."""
 
 import logging
 import uuid
@@ -9,6 +9,12 @@ from src.agents.engineering import CodeAgent, DevOpsAgent, SecurityAgent, TestAg
 from src.agents.gtm import GrowthAgent, LaunchAgent, MarketingAgent, SupportAgent
 from src.agents.product import DesignAgent, ResearchEnrichmentAgent, SpecAgent
 from src.models import FactoryHandoff, FactoryState, Phase, PhaseStatus
+from src.orchestrator.persistence import (
+    delete_state,
+    list_states,
+    load_state,
+    save_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +61,6 @@ PHASE_ORDER = [
     Phase.GROWTH,
 ]
 
-# In-memory state storage (would be Redis/DB in production)
-_factory_states: dict[str, FactoryState] = {}
-
-
-def save_state(state: FactoryState):
-    """Persist factory state."""
-    _factory_states[state.execution_id] = state
-
-
-def load_state(execution_id: str) -> Optional[FactoryState]:
-    """Load factory state."""
-    return _factory_states.get(execution_id)
-
 
 def create_factory_run(handoff: FactoryHandoff) -> FactoryState:
     """Create a new factory execution."""
@@ -87,11 +80,18 @@ def create_factory_run(handoff: FactoryHandoff) -> FactoryState:
     return state
 
 
-def run_factory(state: FactoryState) -> FactoryState:
+def run_factory(
+    state: FactoryState,
+    channel_id: Optional[str] = None,
+) -> FactoryState:
     """
     Execute the factory pipeline.
 
-    Returns when complete or when a checkpoint requires approval.
+    Args:
+        state: Current factory state
+        channel_id: Slack channel for notifications (optional)
+
+    Returns when complete, at a checkpoint, or on failure.
     """
     logger.info(f"Starting factory run: {state.execution_id}")
 
@@ -103,6 +103,11 @@ def run_factory(state: FactoryState) -> FactoryState:
             state.update_phase_status(current_phase, PhaseStatus.AWAITING_APPROVAL)
             save_state(state)
             logger.info(f"Phase {current_phase.value} awaiting approval")
+            
+            # Send Slack notification
+            if channel_id:
+                _notify_checkpoint(channel_id, state)
+            
             return state
 
         # Execute current phase
@@ -117,6 +122,10 @@ def run_factory(state: FactoryState) -> FactoryState:
             save_state(state)
 
             logger.info(f"Phase {current_phase.value} completed")
+            
+            # Send progress notification
+            if channel_id:
+                _notify_phase_complete(channel_id, state, current_phase)
 
         except Exception as e:
             logger.exception(f"Phase {current_phase.value} failed")
@@ -127,6 +136,14 @@ def run_factory(state: FactoryState) -> FactoryState:
                 "timestamp": datetime.utcnow().isoformat(),
             })
             save_state(state)
+            
+            # Create Linear error issue
+            _create_linear_error(state, current_phase, str(e))
+            
+            # Send failure notification with resume option
+            if channel_id:
+                _notify_failure(channel_id, state, str(e))
+            
             return state
 
         # Move to next phase
@@ -136,13 +153,71 @@ def run_factory(state: FactoryState) -> FactoryState:
             state.completed_at = datetime.utcnow()
             save_state(state)
             logger.info(f"Factory run complete: {state.execution_id}")
+            
+            # Send completion notification
+            if channel_id:
+                _notify_complete(channel_id, state)
+            
             return state
 
         state.current_phase = next_phase
         save_state(state)
 
 
-def approve_checkpoint(state: FactoryState, phase: Phase) -> FactoryState:
+def resume_factory(
+    execution_id: str,
+    channel_id: Optional[str] = None,
+) -> Optional[FactoryState]:
+    """
+    Resume a failed or stopped factory run.
+
+    Args:
+        execution_id: The execution ID to resume
+        channel_id: Slack channel for notifications
+
+    Returns:
+        Updated state, or None if execution not found
+    """
+    state = load_state(execution_id)
+    
+    if not state:
+        logger.error(f"No state found for execution: {execution_id}")
+        return None
+    
+    current_status = state.phase_statuses.get(state.current_phase.value)
+    
+    if current_status == PhaseStatus.FAILED:
+        # Reset failed phase to pending and retry
+        logger.info(f"Resuming failed execution {execution_id} from {state.current_phase.value}")
+        state.update_phase_status(state.current_phase, PhaseStatus.PENDING)
+        save_state(state)
+        return run_factory(state, channel_id)
+    
+    elif current_status == PhaseStatus.AWAITING_APPROVAL:
+        logger.info(f"Execution {execution_id} is awaiting approval, not resuming")
+        return state
+    
+    elif current_status == PhaseStatus.COMPLETED:
+        # Move to next phase if current is complete
+        next_phase = _get_next_phase(state.current_phase)
+        if next_phase:
+            state.current_phase = next_phase
+            save_state(state)
+            return run_factory(state, channel_id)
+        else:
+            logger.info(f"Execution {execution_id} is already complete")
+            return state
+    
+    else:
+        # Continue from current state
+        return run_factory(state, channel_id)
+
+
+def approve_checkpoint(
+    state: FactoryState,
+    phase: Phase,
+    channel_id: Optional[str] = None,
+) -> FactoryState:
     """Approve a checkpoint and continue execution."""
     if state.phase_statuses.get(phase.value) != PhaseStatus.AWAITING_APPROVAL:
         raise ValueError(f"Phase {phase.value} is not awaiting approval")
@@ -154,7 +229,34 @@ def approve_checkpoint(state: FactoryState, phase: Phase) -> FactoryState:
     logger.info(f"Checkpoint {phase.value} approved, continuing...")
 
     # Continue execution
-    return run_factory(state)
+    return run_factory(state, channel_id)
+
+
+def get_failed_runs() -> list[dict]:
+    """Get all failed factory runs that can be resumed."""
+    return list_states(status_filter="failed")
+
+
+def get_pending_runs() -> list[dict]:
+    """Get all runs awaiting approval."""
+    return list_states(status_filter="awaiting_approval")
+
+
+def cleanup_old_runs(days: int = 30) -> int:
+    """Delete factory runs older than specified days."""
+    from datetime import timedelta
+    
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    deleted = 0
+    
+    for run in list_states():
+        started = datetime.fromisoformat(run["started_at"])
+        if started < cutoff:
+            delete_state(run["execution_id"])
+            deleted += 1
+    
+    logger.info(f"Cleaned up {deleted} old factory runs")
+    return deleted
 
 
 def _requires_approval(state: FactoryState, phase: Phase) -> bool:
@@ -238,3 +340,107 @@ def _get_next_phase(current: Phase) -> Optional[Phase]:
     except ValueError:
         pass
     return None
+
+
+# Notification helpers
+def _notify_checkpoint(channel_id: str, state: FactoryState):
+    """Send checkpoint approval request."""
+    try:
+        from src.slack.notifications import send_checkpoint_request
+        send_checkpoint_request(channel_id, state)
+    except Exception as e:
+        logger.error(f"Failed to send checkpoint notification: {e}")
+
+
+def _notify_phase_complete(channel_id: str, state: FactoryState, phase: Phase):
+    """Send phase completion notification."""
+    try:
+        from src.slack.notifications import send_phase_update
+        send_phase_update(channel_id, state, phase)
+    except Exception as e:
+        logger.error(f"Failed to send phase notification: {e}")
+
+
+def _notify_failure(channel_id: str, state: FactoryState, error: str):
+    """Send failure notification with resume option."""
+    try:
+        from src.slack.app import app
+        
+        app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ Factory failed at {state.current_phase.value}",
+            blocks=[
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "❌ Factory Execution Failed",
+                    },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Phase:*\n{state.current_phase.value.replace('_', ' ').title()}",
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Product:*\n{state.handoff.opportunity.name}",
+                        },
+                    ],
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*Error:*\n```{error[:500]}```",
+                    },
+                },
+                {"type": "divider"},
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "🔄 Resume Factory"},
+                            "style": "primary",
+                            "value": state.execution_id,
+                            "action_id": "resume_factory",
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "📋 View in Linear"},
+                            "url": state.handoff.linear_project_url,
+                            "action_id": "view_linear",
+                        },
+                    ],
+                },
+            ],
+        )
+    except Exception as e:
+        logger.error(f"Failed to send failure notification: {e}")
+
+
+def _notify_complete(channel_id: str, state: FactoryState):
+    """Send completion notification."""
+    try:
+        from src.slack.notifications import send_factory_complete
+        send_factory_complete(channel_id, state)
+    except Exception as e:
+        logger.error(f"Failed to send completion notification: {e}")
+
+
+def _create_linear_error(state: FactoryState, phase: Phase, error: str):
+    """Create a Linear issue for the error."""
+    try:
+        from src.tools import linear
+        
+        linear.create_error_issue(
+            project_id=state.handoff.linear_project_id,
+            phase=phase.value,
+            error_message=error,
+            execution_id=state.execution_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create Linear error issue: {e}")

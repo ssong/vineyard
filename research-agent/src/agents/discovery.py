@@ -102,7 +102,9 @@ For each opportunity, provide a JSON array with objects containing:
 Return ONLY a JSON array of 5 opportunities."""
 
         try:
-            result = llm.generate_json(DISCOVERY_AGENT_PROMPT, user_prompt)
+            result = llm.generate_json(
+                DISCOVERY_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+            )
 
             opportunities = []
             for opp_data in result[:5]:

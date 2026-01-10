@@ -159,5 +159,127 @@ def add_comment(issue_id: str, body: str) -> bool:
         }
     }
 
+
     data = _make_request(mutation, variables)
     return data.get("commentCreate", {}).get("success", False)
+
+
+def add_project_comment(project_id: str, body: str) -> bool:
+    """Add a comment to a project (creates an issue as a workaround since Linear projects don't have comments)."""
+    # Linear projects don't support comments directly, so we create a tracking issue
+    try:
+        project = get_project(project_id)
+        teams = project.get("teams", {}).get("nodes", [])
+        if not teams:
+            logger.warning("No team found for project")
+            return False
+        
+        team_id = teams[0]["id"]
+        
+        result = create_issue(
+            project_id=project_id,
+            team_id=team_id,
+            title="📋 Factory Status Update",
+            description=body,
+            priority=4,  # Low priority for status updates
+        )
+        return bool(result)
+    except Exception as e:
+        logger.error(f"Failed to add project comment: {e}")
+        return False
+
+
+def create_error_issue(
+    project_id: str,
+    phase: str,
+    error_message: str,
+    execution_id: str,
+) -> Optional[str]:
+    """
+    Create an error issue in Linear when a factory phase fails.
+    
+    Returns the issue URL if successful, None otherwise.
+    """
+    try:
+        project = get_project(project_id)
+        teams = project.get("teams", {}).get("nodes", [])
+        
+        if not teams:
+            logger.warning("No team found for project")
+            return None
+        
+        team_id = teams[0]["id"]
+        
+        # Format error description
+        description = f"""## ❌ Factory Phase Failed
+
+**Phase:** {phase.replace('_', ' ').title()}
+**Execution ID:** `{execution_id}`
+
+### Error Details
+
+```
+{error_message[:2000]}
+```
+
+### Next Steps
+
+1. Review the error message above
+2. Check logs for more context
+3. Fix the underlying issue
+4. Resume the factory from Slack or restart manually
+
+---
+*This issue was automatically created by the Vineyard Factory*
+"""
+
+        result = create_issue(
+            project_id=project_id,
+            team_id=team_id,
+            title=f"🔴 Factory Error: {phase.replace('_', ' ').title()} Failed",
+            description=description,
+            priority=1,  # Urgent
+        )
+        
+        if result:
+            logger.info(f"Created error issue: {result.get('url')}")
+            return result.get("url")
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to create error issue: {e}")
+        return None
+
+
+def update_project_status(
+    project_id: str,
+    phase: str,
+    status: str,
+    details: Optional[str] = None,
+) -> bool:
+    """
+    Update project with phase status via a status tracking issue.
+    
+    Args:
+        project_id: Linear project ID
+        phase: Current phase name
+        status: Status (completed, failed, in_progress)
+        details: Optional additional details
+    """
+    status_emoji = {
+        "completed": "✅",
+        "failed": "❌",
+        "in_progress": "🔄",
+        "awaiting_approval": "⏸️",
+    }
+    
+    emoji = status_emoji.get(status, "📋")
+    
+    body = f"## {emoji} Phase Update: {phase.replace('_', ' ').title()}\n\n"
+    body += f"**Status:** {status.replace('_', ' ').title()}\n\n"
+    
+    if details:
+        body += f"**Details:**\n{details}\n"
+    
+    return add_project_comment(project_id, body)
