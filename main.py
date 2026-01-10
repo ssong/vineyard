@@ -163,10 +163,14 @@ def register_unified_command_handler(shared_app):
         elif subcommand.startswith("build"):
             # Route to factory
             _handle_factory_build(respond, command, shared_app)
+        elif subcommand == "list" or subcommand == "projects":
+            # List Linear projects
+            _handle_list_projects(respond, shared_app)
         elif subcommand == "help":
             respond(
                 text="*Vineyard Commands*\n"
                 "• `/vineyard new` - Start a new research cycle\n"
+                "• `/vineyard list` - List available Linear projects\n"
                 "• `/vineyard build [project-id]` - Start factory for a project\n"
                 "• `/vineyard help` - Show this help message"
             )
@@ -176,6 +180,65 @@ def register_unified_command_handler(shared_app):
             )
 
     logger.info("✓ Unified /vineyard command handler registered")
+
+
+def _handle_list_projects(respond: Respond, shared_app: App):
+    """Handle /vineyard list - shows available Linear projects."""
+    set_project_path(FACTORY_PATH)
+    clear_src_modules()
+    inject_app_module(FACTORY_PATH, shared_app)
+
+    try:
+        from src.tools.linear import list_projects
+
+        projects = list_projects(limit=15)
+
+        if not projects:
+            respond(
+                text="No projects found in Linear.\n\n"
+                "_Create a project in Linear first, or run `/vineyard new` to discover opportunities._"
+            )
+            return
+
+        # Build project list
+        lines = ["*Available Linear Projects*\n"]
+
+        for proj in projects:
+            name = proj.get("name", "Untitled")
+            proj_id = proj.get("id", "")
+            state = proj.get("state", "").lower()
+            url = proj.get("url", "")
+
+            # Get team info
+            teams = proj.get("teams", {}).get("nodes", [])
+            team_key = teams[0].get("key", "") if teams else ""
+
+            # State emoji
+            state_emoji = {
+                "planned": "📋",
+                "started": "🚀",
+                "paused": "⏸️",
+                "completed": "✅",
+                "canceled": "❌",
+            }.get(state, "📁")
+
+            # Format line with copyable ID
+            if team_key:
+                lines.append(f"{state_emoji} *{name}* ({team_key})")
+            else:
+                lines.append(f"{state_emoji} *{name}*")
+            lines.append(f"   ID: `{proj_id}`")
+            if url:
+                lines.append(f"   <{url}|View in Linear>")
+            lines.append("")
+
+        lines.append("_Use `/vineyard build [project-id]` to start the factory_")
+
+        respond(text="\n".join(lines))
+
+    except Exception as e:
+        logger.exception("Failed to list projects")
+        respond(text=f"❌ Failed to list projects: {str(e)}")
 
 
 def _handle_research_new(respond: Respond, command: dict, shared_app: App):

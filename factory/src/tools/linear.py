@@ -253,6 +253,41 @@ def get_project(project_id: str) -> dict:
     return data.get("project", {})
 
 
+def list_projects(limit: int = 20) -> list[dict]:
+    """
+    List recent projects from Linear.
+
+    Args:
+        limit: Maximum number of projects to return (default 20)
+
+    Returns:
+        List of project dicts with id, name, url, state, and team info
+    """
+    query = """
+    query ListProjects($first: Int!) {
+        projects(first: $first, orderBy: updatedAt) {
+            nodes {
+                id
+                name
+                url
+                state
+                description
+                updatedAt
+                teams {
+                    nodes {
+                        id
+                        name
+                        key
+                    }
+                }
+            }
+        }
+    }
+    """
+    data = _make_request(query, {"first": limit})
+    return data.get("projects", {}).get("nodes", [])
+
+
 def create_issue(
     project_id: str,
     team_id: str,
