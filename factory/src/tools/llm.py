@@ -372,16 +372,18 @@ def generate_json(
     max_tokens: int = 8192,
     use_extended_thinking: bool = False,
     thinking_budget: int = 10000,
+    max_retries: int = 2,
 ) -> dict[str, Any]:
-    """Generate JSON using Claude with token limit handling and prompt caching.
+    """Generate JSON using Claude with token limit handling, retry logic, and JSON repair.
 
     Args:
         system_prompt: System instructions for the model
         user_prompt: User input/query
         model: Model to use (MODEL_OPUS or MODEL_SONNET)
-        max_tokens: Maximum output tokens
+        max_tokens: Maximum output tokens (will be increased on retry)
         use_extended_thinking: Enable extended thinking for complex reasoning
         thinking_budget: Token budget for thinking
+        max_retries: Number of retries with increased token limits
 
     Returns:
         Parsed JSON as dictionary
@@ -389,37 +391,158 @@ def generate_json(
     json_system = (
         system_prompt
         + "\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just JSON."
+        + " Ensure the JSON is complete and properly closed with all brackets and braces."
     )
 
-    response = generate(
-        json_system,
-        user_prompt,
-        model,
-        max_tokens,
-        use_extended_thinking=use_extended_thinking,
-        thinking_budget=thinking_budget
-    )
+    last_error = None
+    current_max_tokens = max_tokens
 
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            # Increase token limit on retry (truncation is a common cause of JSON errors)
+            current_max_tokens = min(current_max_tokens * 2, 32768)
+            logger.info(f"Retry {attempt}/{max_retries}: increasing max_tokens to {current_max_tokens}")
+
+        response = generate(
+            json_system,
+            user_prompt,
+            model,
+            current_max_tokens,
+            use_extended_thinking=use_extended_thinking,
+            thinking_budget=thinking_budget
+        )
+
+        try:
+            parsed = _parse_json_response(response)
+            return parsed
+        except json.JSONDecodeError as e:
+            last_error = e
+            logger.warning(f"JSON parse failed (attempt {attempt + 1}): {e}")
+            
+            # Try to repair truncated JSON before retrying
+            repaired = _try_repair_json(response)
+            if repaired is not None:
+                logger.info("Successfully repaired truncated JSON")
+                return repaired
+            
+            # Log diagnostic info
+            if attempt == max_retries:
+                logger.error(f"Failed to parse JSON after {max_retries + 1} attempts")
+                logger.debug(f"Response length: {len(response)} chars")
+                logger.debug(f"Response tail (last 200 chars): ...{response[-200:]}")
+
+    raise ValueError(f"LLM did not return valid JSON after {max_retries + 1} attempts: {last_error}")
+
+
+def _parse_json_response(response: str) -> dict[str, Any]:
+    """Parse JSON from LLM response, handling markdown code blocks."""
+    # Strip leading/trailing whitespace
+    response = response.strip()
+    
+    # Handle potential markdown code blocks
+    if response.startswith("```"):
+        lines = response.split("\n")
+        json_lines = []
+        in_json = False
+        for line in lines:
+            if line.startswith("```json") or line.startswith("```"):
+                in_json = not in_json
+                continue
+            if in_json:
+                json_lines.append(line)
+        response = "\n".join(json_lines)
+
+    return json.loads(response)
+
+
+def _try_repair_json(response: str) -> dict[str, Any] | None:
+    """Attempt to repair truncated JSON by closing open structures.
+    
+    Common truncation patterns:
+    - Unterminated string: add closing quote
+    - Missing closing brackets/braces: add them
+    - Trailing comma before close: remove it
+    
+    Returns parsed dict if repair succeeds, None otherwise.
+    """
+    # Strip markdown if present
+    response = response.strip()
+    if response.startswith("```"):
+        lines = response.split("\n")
+        json_lines = []
+        in_json = False
+        for line in lines:
+            if line.startswith("```json") or line.startswith("```"):
+                in_json = not in_json
+                continue
+            if in_json:
+                json_lines.append(line)
+        response = "\n".join(json_lines)
+    
+    # Track bracket balance
+    open_braces = 0
+    open_brackets = 0
+    in_string = False
+    escape_next = False
+    last_non_ws = None
+    
+    for i, char in enumerate(response):
+        if escape_next:
+            escape_next = False
+            continue
+        if char == '\\':
+            escape_next = True
+            continue
+        if char == '"' and not escape_next:
+            in_string = not in_string
+        if not in_string:
+            if char == '{':
+                open_braces += 1
+            elif char == '}':
+                open_braces -= 1
+            elif char == '[':
+                open_brackets += 1
+            elif char == ']':
+                open_brackets -= 1
+            if char not in ' \t\n\r':
+                last_non_ws = char
+    
+    # Try repairs
+    repaired = response
+    
+    # If still in string, try to close it
+    if in_string:
+        # Find a reasonable place to truncate (last complete-looking property)
+        # Look for pattern: "...", or "...":
+        truncate_at = response.rfind('",')
+        if truncate_at == -1:
+            truncate_at = response.rfind('":')
+        if truncate_at > len(response) // 2:
+            repaired = response[:truncate_at + 1]
+            # Recount after truncation
+            open_braces = repaired.count('{') - repaired.count('}')
+            open_brackets = repaired.count('[') - repaired.count(']')
+            in_string = False
+    
+    # Remove trailing comma if present
+    repaired = repaired.rstrip()
+    if repaired.endswith(','):
+        repaired = repaired[:-1]
+    
+    # Close open structures
+    repaired += ']' * open_brackets
+    repaired += '}' * open_braces
+    
+    # Try to parse repaired JSON
     try:
-        # Handle potential markdown code blocks
-        if response.strip().startswith("```"):
-            lines = response.strip().split("\n")
-            json_lines = []
-            in_json = False
-            for line in lines:
-                if line.startswith("```json") or line.startswith("```"):
-                    in_json = not in_json
-                    continue
-                if in_json:
-                    json_lines.append(line)
-            response = "\n".join(json_lines)
-
-        return json.loads(response)
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON response: {e}")
-        logger.debug(f"Response was: {response[:500]}")
-        raise ValueError(f"LLM did not return valid JSON: {e}")
+        result = json.loads(repaired)
+        # Validate it has expected structure (at minimum, should be a dict)
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
+    
+    return None
 
 
 def generate_code(
