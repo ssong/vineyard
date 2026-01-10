@@ -102,13 +102,16 @@ def register_factory_handlers(app):
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
-    # Ensure factory path is set
-    if FACTORY_PATH not in sys.path:
-        sys.path.insert(0, FACTORY_PATH)
+    # Put factory at the front of sys.path
+    if FACTORY_PATH in sys.path:
+        sys.path.remove(FACTORY_PATH)
+    sys.path.insert(0, FACTORY_PATH)
     
-    # Clear any stale module cache
-    if 'src.api.server' in sys.modules:
-        del sys.modules['src.api.server']
+    # Clear all stale src.* modules to ensure fresh imports from factory
+    modules_to_remove = [key for key in sys.modules.keys() 
+                         if key.startswith('src.')]
+    for mod in modules_to_remove:
+        del sys.modules[mod]
     
     from src.api.server import start_server
     
