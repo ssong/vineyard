@@ -531,7 +531,7 @@ docker run -d \
   --name vineyard-factory \
   --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
-  --env-file /opt/vineyard/factory/.env \
+  --env-file /home/vineyard/factory/.env \
   -v /var/lib/vineyard-factory/state:/var/lib/vineyard-factory/state \
   --health-cmd="curl -f http://localhost:8000/health || exit 1" \
   --health-interval=30s \
