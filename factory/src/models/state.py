@@ -143,6 +143,10 @@ class FactoryState:
     phase_outputs: dict[str, Any] = field(default_factory=dict)
     checkpoints_cleared: list[str] = field(default_factory=list)
     linear_issues: dict[str, list[str]] = field(default_factory=dict)
+    # Phase issue tracking (issue IDs for each phase placeholder)
+    linear_phase_issues: dict[str, dict] = field(default_factory=dict)
+    # Team ID for Linear operations (cached after first lookup)
+    linear_team_id: Optional[str] = None
     errors: list[dict] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.utcnow)
     last_updated_at: datetime = field(default_factory=datetime.utcnow)

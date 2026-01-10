@@ -15,6 +15,7 @@ from src.orchestrator.persistence import (
     load_state,
     save_state,
 )
+from src.tools import linear
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +75,49 @@ def create_factory_run(handoff: FactoryHandoff) -> FactoryState:
     for phase in PHASE_ORDER:
         state.phase_statuses[phase.value] = PhaseStatus.PENDING
 
+    # Create upfront Linear issues for all phases
+    try:
+        phase_issues = _initialize_linear_tracking(state)
+        state.linear_phase_issues = phase_issues
+        logger.info(f"Created {len(phase_issues)} upfront Linear issues")
+    except Exception as e:
+        logger.warning(f"Failed to create upfront Linear issues: {e}")
+
     save_state(state)
     logger.info(f"Created factory run: {state.execution_id}")
 
     return state
+
+
+def _initialize_linear_tracking(state: FactoryState) -> dict[str, dict]:
+    """
+    Create upfront Linear issues for all factory phases.
+
+    Returns:
+        Dict mapping phase names to their issue info
+    """
+    if not state.handoff.linear_project_id:
+        logger.warning("No Linear project ID in handoff, skipping issue creation")
+        return {}
+
+    # Get team ID from project
+    project = linear.get_project(state.handoff.linear_project_id)
+    teams = project.get("teams", {}).get("nodes", [])
+
+    if not teams:
+        logger.warning("No team found for Linear project")
+        return {}
+
+    state.linear_team_id = teams[0]["id"]
+
+    # Create upfront issues for all phases
+    phase_issues = linear.create_factory_issues(
+        project_id=state.handoff.linear_project_id,
+        product_name=state.handoff.opportunity.name,
+        execution_id=state.execution_id,
+    )
+
+    return phase_issues
 
 
 def run_factory(
@@ -95,6 +135,14 @@ def run_factory(
     """
     logger.info(f"Starting factory run: {state.execution_id}")
 
+    # Ensure Linear tracking is initialized (for resumed runs)
+    if not state.linear_phase_issues and state.handoff.linear_project_id:
+        try:
+            state.linear_phase_issues = _initialize_linear_tracking(state)
+            save_state(state)
+        except Exception as e:
+            logger.warning(f"Failed to initialize Linear tracking on resume: {e}")
+
     while True:
         current_phase = state.current_phase
 
@@ -103,17 +151,29 @@ def run_factory(
             state.update_phase_status(current_phase, PhaseStatus.AWAITING_APPROVAL)
             save_state(state)
             logger.info(f"Phase {current_phase.value} awaiting approval")
-            
+
+            # Update Linear issue to show blocked/awaiting state
+            _update_linear_phase_status(
+                state, current_phase, "blocked",
+                "Awaiting human approval before proceeding"
+            )
+
             # Send Slack notification
             if channel_id:
                 _notify_checkpoint(channel_id, state)
-            
+
             return state
 
         # Execute current phase
         try:
             state.update_phase_status(current_phase, PhaseStatus.IN_PROGRESS)
             save_state(state)
+
+            # Update Linear issue to show in-progress
+            _update_linear_phase_status(
+                state, current_phase, "started",
+                f"Starting {current_phase.value.replace('_', ' ')} phase..."
+            )
 
             output = _execute_phase(state, current_phase)
 
@@ -122,7 +182,13 @@ def run_factory(
             save_state(state)
 
             logger.info(f"Phase {current_phase.value} completed")
-            
+
+            # Update Linear issue to show completed
+            _update_linear_phase_status(
+                state, current_phase, "completed",
+                _get_phase_summary(current_phase, output)
+            )
+
             # Send progress notification
             if channel_id:
                 _notify_phase_complete(channel_id, state, current_phase)
@@ -136,14 +202,20 @@ def run_factory(
                 "timestamp": datetime.utcnow().isoformat(),
             })
             save_state(state)
-            
-            # Create Linear error issue
+
+            # Update Linear issue to show failed
+            _update_linear_phase_status(
+                state, current_phase, "failed",
+                f"Phase failed: {str(e)[:500]}"
+            )
+
+            # Create Linear error issue (as sub-issue)
             _create_linear_error(state, current_phase, str(e))
-            
+
             # Send failure notification with resume option
             if channel_id:
                 _notify_failure(channel_id, state, str(e))
-            
+
             return state
 
         # Move to next phase
@@ -153,11 +225,14 @@ def run_factory(
             state.completed_at = datetime.utcnow()
             save_state(state)
             logger.info(f"Factory run complete: {state.execution_id}")
-            
+
+            # Mark root issue as complete
+            _complete_factory_run_linear(state)
+
             # Send completion notification
             if channel_id:
                 _notify_complete(channel_id, state)
-            
+
             return state
 
         state.current_phase = next_phase
@@ -434,8 +509,6 @@ def _notify_complete(channel_id: str, state: FactoryState):
 def _create_linear_error(state: FactoryState, phase: Phase, error: str):
     """Create a Linear issue for the error."""
     try:
-        from src.tools import linear
-        
         linear.create_error_issue(
             project_id=state.handoff.linear_project_id,
             phase=phase.value,
@@ -444,3 +517,213 @@ def _create_linear_error(state: FactoryState, phase: Phase, error: str):
         )
     except Exception as e:
         logger.error(f"Failed to create Linear error issue: {e}")
+
+
+def _update_linear_phase_status(
+    state: FactoryState,
+    phase: Phase,
+    status: str,
+    message: Optional[str] = None,
+):
+    """
+    Update the Linear issue for a phase with current status.
+
+    Args:
+        state: Factory state with phase issues
+        phase: Current phase
+        status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked'
+        message: Optional progress message
+    """
+    try:
+        phase_info = state.linear_phase_issues.get(phase.value)
+        if not phase_info:
+            logger.debug(f"No Linear issue found for phase {phase.value}")
+            return
+
+        phase_issue_id = phase_info.get("id")
+        if not phase_issue_id or not state.linear_team_id:
+            return
+
+        linear.update_phase_issue(
+            phase_issue_id=phase_issue_id,
+            team_id=state.linear_team_id,
+            status=status,
+            progress_message=message,
+        )
+
+    except Exception as e:
+        logger.warning(f"Failed to update Linear phase status: {e}")
+
+
+def _complete_factory_run_linear(state: FactoryState):
+    """Mark the root factory issue as complete in Linear."""
+    try:
+        root_info = state.linear_phase_issues.get("root")
+        if not root_info or not state.linear_team_id:
+            return
+
+        root_id = root_info.get("id")
+        if root_id:
+            linear.complete_issue(root_id, state.linear_team_id)
+
+            # Add completion summary
+            linear.add_comment(
+                root_id,
+                f"""## ✅ Factory Run Complete
+
+All phases have completed successfully.
+
+**Product:** {state.handoff.opportunity.name}
+**Duration:** Started at {state.started_at.isoformat()}
+**Completed:** {state.completed_at.isoformat() if state.completed_at else 'now'}
+
+---
+*Vineyard Factory*
+"""
+            )
+
+    except Exception as e:
+        logger.warning(f"Failed to complete factory root issue: {e}")
+
+
+def _get_phase_summary(phase: Phase, output: dict) -> str:
+    """Generate a summary of phase output for Linear comment."""
+    if not output:
+        return "Phase completed successfully."
+
+    summary_parts = []
+
+    if phase == Phase.RESEARCH_ENRICHMENT:
+        summary_parts.append("Research enrichment completed:")
+        if "enriched_data" in output:
+            summary_parts.append("- Market data enriched")
+        if "competitor_analysis" in output:
+            summary_parts.append("- Competitor analysis updated")
+
+    elif phase == Phase.DESIGN:
+        summary_parts.append("Design phase completed:")
+        if "prd" in output:
+            summary_parts.append("- PRD generated")
+        if "user_flows" in output:
+            summary_parts.append("- User flows created")
+        if "features" in output:
+            count = len(output.get("features", []))
+            summary_parts.append(f"- {count} features specified")
+
+    elif phase == Phase.SPEC:
+        summary_parts.append("Technical specification completed:")
+        if "endpoints" in output:
+            count = len(output.get("endpoints", []))
+            summary_parts.append(f"- {count} API endpoints designed")
+        if "database" in output:
+            tables = output.get("database", {}).get("tables", [])
+            summary_parts.append(f"- {len(tables)} database tables")
+        if "tasks" in output:
+            count = len(output.get("tasks", []))
+            summary_parts.append(f"- {count} engineering tasks")
+
+    elif phase == Phase.BUILD:
+        summary_parts.append("Build phase completed:")
+        if "code" in output:
+            files = output.get("code", {}).get("files_generated", [])
+            summary_parts.append(f"- {len(files)} code files generated")
+        if "test" in output:
+            tests = output.get("test", {}).get("test_files", [])
+            summary_parts.append(f"- {len(tests)} test files created")
+        if "security" in output:
+            summary_parts.append("- Security review complete")
+        if "devops" in output:
+            summary_parts.append("- DevOps configuration ready")
+
+    elif phase == Phase.LAUNCH_PREP:
+        summary_parts.append("Launch preparation completed:")
+        if "marketing" in output:
+            summary_parts.append("- Marketing content ready")
+
+    elif phase == Phase.LAUNCH:
+        summary_parts.append("Launch completed:")
+        summary_parts.append("- Product deployed to production")
+
+    elif phase == Phase.GROWTH:
+        summary_parts.append("Growth setup completed:")
+        if "growth" in output:
+            summary_parts.append("- Growth experiments configured")
+        if "support" in output:
+            summary_parts.append("- Support documentation ready")
+
+    return "\n".join(summary_parts) if summary_parts else "Phase completed successfully."
+
+
+def add_work_items_to_phase(
+    state: FactoryState,
+    phase: Phase,
+    work_items: list[dict],
+) -> list[dict]:
+    """
+    Add work item issues to a phase during execution.
+
+    This is called by agents to create sub-issues for actual work items.
+
+    Args:
+        state: Factory state
+        phase: The phase these items belong to
+        work_items: List of {"title": str, "description": str, "priority": int}
+
+    Returns:
+        List of created issue dicts with id, identifier, url
+    """
+    if not state.handoff.linear_project_id or not state.linear_team_id:
+        return []
+
+    phase_info = state.linear_phase_issues.get(phase.value)
+    if not phase_info:
+        return []
+
+    phase_id = phase_info.get("id")
+    if not phase_id:
+        return []
+
+    try:
+        label = linear.PHASE_ISSUE_CONFIG.get(phase.value, {}).get("label", "phase")
+
+        created = linear.create_work_items(
+            project_id=state.handoff.linear_project_id,
+            team_id=state.linear_team_id,
+            phase_issue_id=phase_id,
+            work_items=work_items,
+            label=label,
+        )
+
+        # Track created issues in state
+        if phase.value not in state.linear_issues:
+            state.linear_issues[phase.value] = []
+        state.linear_issues[phase.value].extend([i.get("id") for i in created if i.get("id")])
+
+        save_state(state)
+        return created
+
+    except Exception as e:
+        logger.warning(f"Failed to add work items to phase: {e}")
+        return []
+
+
+def start_work_item(state: FactoryState, issue_id: str) -> bool:
+    """Mark a work item as in-progress."""
+    if not state.linear_team_id:
+        return False
+    try:
+        return linear.start_issue(issue_id, state.linear_team_id)
+    except Exception as e:
+        logger.warning(f"Failed to start work item: {e}")
+        return False
+
+
+def complete_work_item(state: FactoryState, issue_id: str) -> bool:
+    """Mark a work item as done."""
+    if not state.linear_team_id:
+        return False
+    try:
+        return linear.complete_issue(issue_id, state.linear_team_id)
+    except Exception as e:
+        logger.warning(f"Failed to complete work item: {e}")
+        return False

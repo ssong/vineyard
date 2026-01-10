@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 
+# Cache for labels (cleared on module reload)
+_labels_cache: dict[str, dict[str, str]] = {}
+
 
 def _make_request(query: str, variables: Optional[dict] = None) -> dict:
     """Make a GraphQL request to Linear API."""
@@ -53,6 +56,120 @@ def get_teams() -> list[dict]:
     """
     data = _make_request(query)
     return data.get("teams", {}).get("nodes", [])
+
+
+def get_labels(team_id: str) -> dict[str, str]:
+    """
+    Get labels for a team.
+
+    Returns:
+        Dict mapping label names (lowercase) to label IDs.
+    """
+    if team_id in _labels_cache:
+        return _labels_cache[team_id]
+
+    query = """
+    query GetLabels($teamId: String!) {
+        team(id: $teamId) {
+            labels {
+                nodes {
+                    id
+                    name
+                    color
+                }
+            }
+        }
+    }
+    """
+
+    data = _make_request(query, {"teamId": team_id})
+    labels = data.get("team", {}).get("labels", {}).get("nodes", [])
+
+    label_map = {label.get("name", "").lower(): label.get("id", "") for label in labels}
+    _labels_cache[team_id] = label_map
+    logger.info(f"Cached labels for team {team_id}: {list(label_map.keys())}")
+    return label_map
+
+
+def create_label(team_id: str, name: str, color: str = "#6B7280") -> Optional[str]:
+    """
+    Create a label for a team.
+
+    Args:
+        team_id: The team ID
+        name: Label name
+        color: Hex color code (default: gray)
+
+    Returns:
+        Label ID if created successfully, None otherwise
+    """
+    mutation = """
+    mutation CreateLabel($input: IssueLabelCreateInput!) {
+        issueLabelCreate(input: $input) {
+            success
+            issueLabel {
+                id
+                name
+            }
+        }
+    }
+    """
+
+    variables = {
+        "input": {
+            "teamId": team_id,
+            "name": name,
+            "color": color,
+        }
+    }
+
+    try:
+        data = _make_request(mutation, variables)
+        result = data.get("issueLabelCreate", {})
+        if result.get("success"):
+            label_id = result.get("issueLabel", {}).get("id")
+            # Update cache
+            if team_id in _labels_cache:
+                _labels_cache[team_id][name.lower()] = label_id
+            logger.info(f"Created label '{name}' with ID {label_id}")
+            return label_id
+    except Exception as e:
+        logger.warning(f"Failed to create label '{name}': {e}")
+    return None
+
+
+def ensure_labels(team_id: str, label_names: list[str]) -> dict[str, str]:
+    """
+    Ensure labels exist for a team, creating them if necessary.
+
+    Args:
+        team_id: The team ID
+        label_names: List of label names to ensure exist
+
+    Returns:
+        Dict mapping label names to their IDs
+    """
+    # Standard colors for different label types
+    label_colors = {
+        "research": "#10B981",      # Green
+        "validation": "#3B82F6",    # Blue
+        "opportunity": "#8B5CF6",   # Purple
+    }
+
+    existing_labels = get_labels(team_id)
+    result = {}
+
+    for name in label_names:
+        name_lower = name.lower()
+        if name_lower in existing_labels:
+            result[name_lower] = existing_labels[name_lower]
+        else:
+            color = label_colors.get(name_lower, "#6B7280")
+            label_id = create_label(team_id, name, color)
+            if label_id:
+                result[name_lower] = label_id
+
+    return result
 
 
 def create_project_for_opportunity(opp_report: OpportunityReport) -> str:
@@ -145,9 +262,12 @@ def _create_initial_issues(project_id: str, team_id: str, opp_report: Opportunit
     """Create initial issues for the project."""
     opp = opp_report.opportunity
 
+    # Ensure required labels exist
+    label_ids = ensure_labels(team_id, ["research", "validation"])
+
     issues_to_create = [
         {
-            "title": f"[Research] Market Analysis Complete",
+            "title": "[Research] Market Analysis Complete",
             "description": (
                 f"Market research completed by Vineyard Research Agent.\n\n"
                 f"**4U Score:** {opp.four_u_score}/100\n"
@@ -157,7 +277,7 @@ def _create_initial_issues(project_id: str, team_id: str, opp_report: Opportunit
             "labels": ["research"],
         },
         {
-            "title": f"[Research] Opportunity Selected",
+            "title": "[Research] Opportunity Selected",
             "description": (
                 f"**{opp.name}** selected for development.\n\n"
                 f"**Recommendation:** {opp_report.recommendation.value}\n\n"
@@ -189,14 +309,26 @@ def _create_initial_issues(project_id: str, team_id: str, opp_report: Opportunit
 
     for issue in issues_to_create:
         try:
-            variables = {
-                "input": {
-                    "title": issue["title"],
-                    "description": issue["description"],
-                    "teamId": team_id,
-                    "projectId": project_id,
-                }
+            # Resolve label names to IDs
+            issue_label_ids = [
+                label_ids[l.lower()]
+                for l in issue.get("labels", [])
+                if l.lower() in label_ids
+            ]
+
+            input_data = {
+                "title": issue["title"],
+                "description": issue["description"],
+                "teamId": team_id,
+                "projectId": project_id,
             }
-            _make_request(create_issue_mutation, variables)
+
+            if issue_label_ids:
+                input_data["labelIds"] = issue_label_ids
+
+            variables = {"input": input_data}
+            result = _make_request(create_issue_mutation, variables)
+            issue_data = result.get("issueCreate", {}).get("issue", {})
+            logger.info(f"Created issue {issue_data.get('identifier')}: {issue['title']}")
         except Exception as e:
             logger.warning(f"Failed to create issue '{issue['title']}': {e}")
