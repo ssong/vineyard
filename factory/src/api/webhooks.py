@@ -28,7 +28,9 @@ limiter = Limiter(key_func=get_remote_address)
 MAX_COMMENT_LENGTH = 10000
 MAX_DESCRIPTION_LENGTH = 50000
 ALLOWED_WEBHOOK_ACTIONS = {"create", "update", "remove"}
-ALLOWED_WEBHOOK_TYPES = {"Issue", "Comment", "Project"}
+# Include common Linear webhook types to avoid 400 errors
+# We only handle Issue/Comment events, but accept others silently
+ALLOWED_WEBHOOK_TYPES = {"Issue", "Comment", "Project", "IssueLabel", "Reaction", "ProjectUpdate"}
 
 
 # =============================================================================

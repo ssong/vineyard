@@ -3,9 +3,9 @@
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
 
-APPROACH: Pre-inject a fake src.slack.app module into sys.modules that contains
-our shared app. When command/interaction modules are imported, their decorators
-(@app.command, @app.action, etc.) register handlers directly to the shared app.
+APPROACH: Register a unified /vineyard command handler that routes to the
+appropriate project based on subcommand. Interaction handlers (@app.action)
+are imported from each project since they use unique action IDs.
 """
 
 import argparse
@@ -15,7 +15,7 @@ import sys
 import threading
 
 from dotenv import load_dotenv
-from slack_bolt import App
+from slack_bolt import App, Ack, Respond
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 # Load environment variables first
@@ -97,56 +97,349 @@ def inject_app_module(project_path, shared_app):
 
 
 def register_research_agent_handlers(shared_app, settings):
-    """Register Research Agent handlers."""
+    """Register Research Agent interaction handlers (not commands)."""
     set_project_path(RESEARCH_AGENT_PATH)
     clear_src_modules()
 
-    # Pre-inject the app module with our shared app BEFORE importing commands
-    # This ensures decorators register directly to shared_app
+    # Pre-inject the app module with our shared app
     inject_app_module(RESEARCH_AGENT_PATH, shared_app)
 
     # Track listener count before import
     before_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
 
-    # Import handlers - decorators register directly to shared_app
-    from src.slack import commands  # noqa: F401
+    # Import ONLY interactions (not commands - we use unified command handler)
+    # Interactions use unique action IDs so they won't conflict
     from src.slack import interactions  # noqa: F401
 
     after_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
     new_listeners = after_count - before_count
-    logger.info(f"✓ Research Agent handlers registered ({new_listeners} listeners)")
+    logger.info(f"✓ Research Agent interaction handlers registered ({new_listeners} listeners)")
 
 
 def register_factory_handlers(shared_app, settings):
-    """Register Factory handlers."""
+    """Register Factory interaction handlers (not commands)."""
     set_project_path(FACTORY_PATH)
     clear_src_modules()
 
-    # Pre-inject the app module with our shared app BEFORE importing commands
-    # This ensures decorators register directly to shared_app
+    # Pre-inject the app module with our shared app
     inject_app_module(FACTORY_PATH, shared_app)
 
     # Track listener count before import
     before_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
 
-    # Import handlers - decorators register directly to shared_app
-    from src.slack import commands  # noqa: F401
+    # Import ONLY interactions (not commands - we use unified command handler)
+    # Interactions use unique action IDs so they won't conflict
     from src.slack import interactions  # noqa: F401
 
     after_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
     new_listeners = after_count - before_count
-    logger.info(f"✓ Factory handlers registered ({new_listeners} listeners)")
+    logger.info(f"✓ Factory interaction handlers registered ({new_listeners} listeners)")
 
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
     set_project_path(FACTORY_PATH)
     clear_src_modules()
-    
+
     from src.api.server import start_server
-    
+
     logger.info(f"Starting API server on {settings.api_host}:{settings.api_port}")
     start_server(host=settings.api_host, port=settings.api_port)
+
+
+def register_unified_command_handler(shared_app):
+    """Register a unified /vineyard command handler that routes to both projects."""
+
+    @shared_app.command("/vineyard")
+    def handle_vineyard_command(ack: Ack, respond: Respond, command: dict):
+        """Unified handler for /vineyard command - routes to appropriate project."""
+        ack()
+
+        subcommand = command.get("text", "").strip().lower()
+
+        if subcommand == "new":
+            # Route to research-agent
+            _handle_research_new(respond, command, shared_app)
+        elif subcommand.startswith("build"):
+            # Route to factory
+            _handle_factory_build(respond, command, shared_app)
+        elif subcommand == "help":
+            respond(
+                text="*Vineyard Commands*\n"
+                "• `/vineyard new` - Start a new research cycle\n"
+                "• `/vineyard build [project-id]` - Start factory for a project\n"
+                "• `/vineyard help` - Show this help message"
+            )
+        else:
+            respond(
+                text="Unknown command. Use `/vineyard help` to see available commands."
+            )
+
+    logger.info("✓ Unified /vineyard command handler registered")
+
+
+def _handle_research_new(respond: Respond, command: dict, shared_app: App):
+    """Handle /vineyard new - delegates to research-agent logic."""
+    set_project_path(RESEARCH_AGENT_PATH)
+    clear_src_modules()
+    inject_app_module(RESEARCH_AGENT_PATH, shared_app)
+
+    channel_id = command["channel_id"]
+    user_id = command["user_id"]
+
+    respond(
+        text="🔍 *Research starting...*\n"
+        "This typically takes 2-3 minutes.\n\n"
+        "_Discovering opportunities, validating markets, and scoring potential..._"
+    )
+
+    try:
+        from src.agents.orchestrator import run_research_pipeline
+        from src.reports.generator import generate_markdown_report
+        from src.reports.pdf import generate_pdf
+        from src.slack.interactions import store_report
+
+        report = run_research_pipeline()
+
+        # Store report for later retrieval
+        store_report(report.report_id, report)
+
+        # Generate PDF
+        markdown_content = generate_markdown_report(report)
+        pdf_path = generate_pdf(markdown_content, report.report_id)
+
+        # Upload PDF and post results
+        _post_research_results(channel_id, user_id, report, pdf_path, shared_app)
+
+    except Exception as e:
+        logger.exception("Research pipeline failed")
+        shared_app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ Research failed: {str(e)}\n\nPlease try again or check the logs.",
+        )
+
+
+def _post_research_results(channel_id: str, user_id: str, report, pdf_path: str, shared_app: App):
+    """Post research results to Slack with interactive elements."""
+    from datetime import datetime
+
+    # Upload PDF
+    shared_app.client.files_upload_v2(
+        channel=channel_id,
+        file=pdf_path,
+        title=f"Research Report - {datetime.now().strftime('%Y-%m-%d')}",
+        initial_comment="📊 *Research Complete*\n\nFull report attached below.",
+    )
+
+    # Build opportunity blocks
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "🎯 Top Opportunities", "emoji": True},
+        },
+        {"type": "divider"},
+    ]
+
+    for i, opp_report in enumerate(report.opportunities[:3], 1):
+        opp = opp_report.opportunity
+        forecast = opp_report.forecast
+
+        # Format MRR range
+        mrr_low = forecast.mrr_month_12_conservative / 100
+        mrr_high = forecast.mrr_month_12_optimistic / 100
+
+        blocks.extend(
+            [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*{i}. {opp.name}* (Score: {opp.overall_score}/100)\n"
+                            f"{opp.one_liner}\n"
+                            f"💰 ${mrr_low:,.0f} - ${mrr_high:,.0f} MRR @ 12mo"
+                        ),
+                    },
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Select This", "emoji": True},
+                        "value": opp.id,
+                        "action_id": f"select_opportunity_{i}",
+                    },
+                },
+                {"type": "divider"},
+            ]
+        )
+
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"_Research completed in {report.research_duration_seconds}s. Reply with a number (1-3) to select._",
+                }
+            ],
+        }
+    )
+
+    # Post message with metadata
+    shared_app.client.chat_postMessage(
+        channel=channel_id,
+        blocks=blocks,
+        text="Research results - select an opportunity to proceed",
+        metadata={
+            "event_type": "research_results",
+            "event_payload": {"report_id": report.report_id},
+        },
+    )
+
+
+def _handle_factory_build(respond: Respond, command: dict, shared_app: App):
+    """Handle /vineyard build - delegates to factory logic."""
+    import uuid
+    from datetime import datetime
+
+    set_project_path(FACTORY_PATH)
+    clear_src_modules()
+    inject_app_module(FACTORY_PATH, shared_app)
+
+    text = command.get("text", "").strip()
+    parts = text.split()
+
+    project_id = parts[1] if len(parts) > 1 else None
+    channel_id = command["channel_id"]
+    user_id = command["user_id"]
+
+    if not project_id:
+        respond(
+            text="Please provide a project ID: `/vineyard build [project-id]`\n\n"
+            "_You can find the project ID in Linear or from the research agent output._"
+        )
+        return
+
+    respond(
+        text=f"🏭 *Factory starting for project {project_id}*\n"
+        "_This will take a few minutes. I'll post updates as each phase completes._"
+    )
+
+    try:
+        from src.models import (
+            BuildPreferences,
+            FactoryHandoff,
+            ForecastSummary,
+            LaunchPreferences,
+            OpportunitySummary,
+            ValidationSummary,
+        )
+        from src.orchestrator import create_factory_run, run_factory
+        from src.slack.channels import create_opportunity_channels
+        from src.orchestrator.persistence import save_state
+        from src.slack.notifications import send_checkpoint_request
+
+        # Create demo handoff
+        handoff = FactoryHandoff(
+            handoff_id=str(uuid.uuid4()),
+            triggered_at=datetime.utcnow(),
+            triggered_by=user_id,
+            research_report_id="demo-report",
+            opportunity_id="demo-opp",
+            linear_project_id=project_id,
+            linear_project_url=f"https://linear.app/team/project/{project_id}",
+            opportunity=OpportunitySummary(
+                name="Demo Product",
+                slug="demo-product",
+                one_liner="A demo product for testing the factory",
+                detailed_description="This is a demo product used to test the factory pipeline.",
+                category="automation",
+                target_segment="smb",
+                business_model="subscription_monthly",
+                problem_statement="Demo problem statement",
+                current_solutions=["Manual process"],
+                pain_intensity=7,
+                frequency="daily",
+                target_market_description="Small business owners",
+                geographic_focus=["global"],
+                direct_competitors=["Competitor A", "Competitor B"],
+                competitor_weaknesses=["Too expensive", "Complex"],
+                differentiation_angle="Simple and affordable",
+                build_complexity="medium",
+                estimated_build_weeks=4,
+                key_technical_components=["API", "Dashboard"],
+                platform_dependencies=[],
+                suggested_price_low=1900,
+                suggested_price_mid=4900,
+                suggested_price_high=9900,
+            ),
+            validation=ValidationSummary(
+                four_u_score=78,
+                four_u_breakdown={"unworkable": 20, "unavoidable": 18, "urgent": 20, "underserved": 20},
+                is_graveyard_market=False,
+                platform_risk_level="low",
+                key_risks=["Competition"],
+                key_opportunities=["Growing market"],
+            ),
+            forecast=ForecastSummary(
+                assumed_arpu=4900,
+                mrr_month_12_conservative=240000,
+                mrr_month_12_moderate=480000,
+                mrr_month_12_optimistic=850000,
+                mrr_month_24_moderate=1200000,
+            ),
+            build_preferences=BuildPreferences(),
+            launch_preferences=LaunchPreferences(),
+            approval_checkpoints=["design", "build", "launch"],
+        )
+
+        # Create factory run
+        state = create_factory_run(handoff)
+
+        # Create opportunity Slack channels
+        slack_channels = create_opportunity_channels(
+            opportunity_slug=handoff.opportunity.slug,
+            opportunity_name=handoff.opportunity.name,
+        )
+        state.slack_channels = slack_channels
+        save_state(state)
+
+        # Post initial message to main channel if created
+        if "main" in slack_channels:
+            shared_app.client.chat_postMessage(
+                channel=slack_channels["main"],
+                text=f"🏭 *Factory run started for {handoff.opportunity.name}*\n\n"
+                f"📋 <{handoff.linear_project_url}|View in Linear>\n\n"
+                f"_Automated updates will be posted to #{handoff.opportunity.slug}-alerts_",
+            )
+
+        # Use alerts channel for notifications (fall back to command channel)
+        notification_channel = slack_channels.get("alerts", channel_id)
+
+        # Run factory
+        result = run_factory(state)
+
+        # Post final status
+        if result.completed_at:
+            shared_app.client.chat_postMessage(
+                channel=notification_channel,
+                text="✅ *Factory run complete!*\n\n"
+                f"All phases finished successfully.\n"
+                f"Linear project: {result.handoff.linear_project_url}",
+            )
+        elif result.phase_statuses.get(result.current_phase.value) == "awaiting_approval":
+            send_checkpoint_request(notification_channel, result)
+        else:
+            shared_app.client.chat_postMessage(
+                channel=notification_channel,
+                text=f"⚠️ Factory paused at *{result.current_phase.value}*\n"
+                f"Check Linear for details.",
+            )
+
+    except Exception as e:
+        logger.exception("Factory failed to start")
+        shared_app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ Factory failed to start: {str(e)}",
+        )
 
 
 def main():
@@ -176,10 +469,14 @@ def main():
         # Create shared Slack app
         app = create_shared_app(settings)
 
-        # Register handlers from both systems
+        # Register unified command handler FIRST (handles /vineyard routing)
+        register_unified_command_handler(app)
+
+        # Register interaction handlers from both systems
+        # (these use unique action IDs so they won't conflict)
         register_research_agent_handlers(app, settings)
         register_factory_handlers(app, settings)
-        
+
         # Log total listeners
         total_listeners = len(app._listeners) if hasattr(app, '_listeners') else 0
         logger.info(f"Total listeners registered: {total_listeners}")
