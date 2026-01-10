@@ -114,8 +114,8 @@ def _run_factory_async(state, channel_id: str):
     from src.slack.app import app as slack_app
 
     try:
-        # Run until checkpoint or completion
-        result = run_factory(state)
+        # Run until checkpoint or completion (pass channel_id for checkpoint notifications)
+        result = run_factory(state, channel_id)
 
         # Post final status
         if result.completed_at:

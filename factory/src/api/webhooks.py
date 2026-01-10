@@ -127,6 +127,17 @@ RETRY_KEYWORDS = [
     "restart",
 ]
 
+# Keywords that trigger checkpoint approval
+APPROVAL_KEYWORDS = [
+    "approve",
+    "approved",
+    "lgtm",
+    "looks good",
+    "ship it",
+    "go ahead",
+    "proceed",
+]
+
 # States that trigger a retry when transitioned TO (from a failed state)
 RETRY_TARGET_STATES = [
     "todo",
@@ -224,6 +235,35 @@ def should_retry(comment_body: str) -> bool:
     """Check if comment contains retry keywords."""
     body_lower = comment_body.lower()
     return any(keyword in body_lower for keyword in RETRY_KEYWORDS)
+
+
+def should_approve(comment_body: str) -> bool:
+    """Check if comment contains approval keywords."""
+    body_lower = comment_body.lower()
+    return any(keyword in body_lower for keyword in APPROVAL_KEYWORDS)
+
+
+def find_phase_for_issue(issue_id: str) -> Optional[tuple[str, str]]:
+    """
+    Find the phase and execution ID for an issue.
+
+    Returns:
+        Tuple of (execution_id, phase_name) or None if not found.
+    """
+    all_states = list_states()
+
+    for state_summary in all_states:
+        exec_id = state_summary.get("execution_id", "")
+        state = load_state(exec_id)
+        if not state:
+            continue
+
+        for phase_name, phase_info in state.linear_phase_issues.items():
+            phase_issue_id = phase_info.get("id") if isinstance(phase_info, dict) else None
+            if phase_issue_id == issue_id:
+                return (state.execution_id, phase_name)
+
+    return None
 
 
 def find_execution_for_issue(issue_id: str) -> Optional[str]:
@@ -334,6 +374,101 @@ async def handle_retry_request(
         )
 
 
+async def handle_approval_request(
+    issue_id: str,
+    issue_identifier: str,
+    comment_body: str,
+    commenter_name: str,
+):
+    """
+    Handle a checkpoint approval request from a Linear comment.
+
+    This runs as a background task after the webhook returns.
+    """
+    safe_commenter = commenter_name[:50] if commenter_name else "Unknown"
+    logger.info(f"Processing approval request on {issue_identifier} from {safe_commenter}")
+
+    # Find execution and phase for this issue
+    result = find_phase_for_issue(issue_id)
+
+    if not result:
+        logger.warning(f"No factory phase found for issue {issue_identifier}")
+        linear.add_comment(
+            issue_id,
+            "Could not find a factory checkpoint for this issue."
+        )
+        return
+
+    execution_id, phase_name = result
+
+    # Load the state
+    state = load_state(execution_id)
+    if not state:
+        logger.error(f"Could not load state for execution {execution_id}")
+        linear.add_comment(issue_id, "Factory execution not found.")
+        return
+
+    # Check if this phase is actually awaiting approval
+    from src.models import Phase, PhaseStatus
+
+    try:
+        phase = Phase(phase_name)
+    except ValueError:
+        logger.warning(f"Invalid phase name: {phase_name}")
+        linear.add_comment(issue_id, f"Invalid phase: {phase_name}")
+        return
+
+    current_status = state.phase_statuses.get(phase.value)
+
+    if current_status != PhaseStatus.AWAITING_APPROVAL:
+        linear.add_comment(
+            issue_id,
+            f"This phase is not awaiting approval (current status: {current_status.value if current_status else 'unknown'})."
+        )
+        return
+
+    # Add acknowledgment comment
+    short_id = execution_id[:8]
+    opp_name = state.handoff.opportunity.name
+    linear.add_comment(
+        issue_id,
+        f"✅ **Checkpoint approved** by {safe_commenter} via Linear\n\n"
+        f"Continuing factory execution for **{opp_name}** (`{short_id}...`)"
+    )
+
+    # Approve and continue
+    try:
+        from src.orchestrator.runner import approve_checkpoint
+
+        # Get Slack channel for notifications
+        channel_id = state.slack_channels.get("alerts") or state.slack_channels.get("main")
+
+        updated_state = approve_checkpoint(state, phase, channel_id)
+
+        if updated_state:
+            if updated_state.completed_at:
+                linear.add_comment(
+                    issue_id,
+                    f"🎉 Factory completed successfully for **{opp_name}**!"
+                )
+            else:
+                new_phase = updated_state.current_phase.value.replace("_", " ").title()
+                new_status = updated_state.phase_statuses.get(updated_state.current_phase.value)
+                linear.add_comment(
+                    issue_id,
+                    f"Factory continuing. Now at: **{new_phase}** ({new_status.value if new_status else 'unknown'})"
+                )
+        else:
+            linear.add_comment(issue_id, "Failed to continue factory after approval.")
+
+    except Exception as e:
+        logger.exception("Error approving checkpoint")
+        linear.add_comment(
+            issue_id,
+            f"Error continuing factory: {sanitize_error_message(e)}"
+        )
+
+
 # =============================================================================
 # Webhook Endpoints
 # =============================================================================
@@ -417,7 +552,19 @@ async def handle_comment_created(
 
     logger.info(f"Comment on {issue_identifier} by {commenter_name}: {body[:50]}...")
 
-    # Check for retry keywords
+    # Check for approval keywords first (checkpoint approval)
+    if should_approve(body):
+        logger.info(f"Approval keyword detected in comment on {issue_identifier}")
+        background_tasks.add_task(
+            handle_approval_request,
+            issue_id,
+            issue_identifier,
+            body,
+            commenter_name,
+        )
+        return  # Don't also process as retry
+
+    # Check for retry keywords (resume failed phases)
     if should_retry(body):
         logger.info(f"Retry keyword detected in comment on {issue_identifier}")
         background_tasks.add_task(
@@ -584,9 +731,10 @@ async def linear_webhook_status():
     """Check webhook configuration status."""
     return {
         "webhook_secret_configured": bool(settings.linear_webhook_secret),
-        "retry_triggers": {
-            "comment_keywords": RETRY_KEYWORDS,
-            "state_transitions": {
+        "triggers": {
+            "approval_keywords": APPROVAL_KEYWORDS,
+            "retry_keywords": RETRY_KEYWORDS,
+            "retry_state_transitions": {
                 "from_states": FAILED_STATES,
                 "to_states": RETRY_TARGET_STATES,
             },

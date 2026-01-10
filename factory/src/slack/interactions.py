@@ -9,8 +9,39 @@ from src.orchestrator.runner import approve_checkpoint, resume_factory
 from src.orchestrator.persistence import load_state
 from src.slack.app import app
 from src.slack.notifications import send_factory_complete
+from src.tools import linear
 
 logger = logging.getLogger(__name__)
+
+
+def _get_approver_name(body: dict) -> str:
+    """Extract approver name from Slack interaction body."""
+    user = body.get("user", {})
+    return user.get("real_name") or user.get("name") or "Slack user"
+
+
+def _sync_approval_to_linear(state, phase: Phase, approver_name: str):
+    """Add a comment to Linear when checkpoint is approved via Slack."""
+    try:
+        phase_info = state.linear_phase_issues.get(phase.value)
+        if not phase_info:
+            logger.debug(f"No Linear issue for phase {phase.value}")
+            return
+
+        issue_id = phase_info.get("id")
+        if not issue_id:
+            return
+
+        opp_name = state.handoff.opportunity.name
+        short_id = state.execution_id[:8]
+
+        linear.add_comment(
+            issue_id,
+            f"✅ **Checkpoint approved** by {approver_name} via Slack\n\n"
+            f"Continuing factory execution for **{opp_name}** (`{short_id}...`)"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to sync approval to Linear: {e}")
 
 
 @app.action("approve_checkpoint")
@@ -31,10 +62,14 @@ def handle_approve_checkpoint(ack: Ack, body: dict, respond):
 
         phase = Phase(phase_value)
         channel_id = body["channel"]["id"]
+        approver_name = _get_approver_name(body)
+
+        # Sync approval to Linear (leave comment on phase issue)
+        _sync_approval_to_linear(state, phase, approver_name)
 
         # Approve and continue
         respond(
-            text=f"✅ Checkpoint approved! Continuing factory...",
+            text=f"✅ Checkpoint approved by {approver_name}! Continuing factory...",
             replace_original=True,
         )
 

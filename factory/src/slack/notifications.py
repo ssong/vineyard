@@ -1,6 +1,7 @@
 """Slack notifications for factory progress."""
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from src.models import FactoryState, Phase, PhaseStatus
@@ -8,6 +9,44 @@ from src.slack.app import app
 from src.utils import truncate_text, SlackLimits
 
 logger = logging.getLogger(__name__)
+
+
+def _get_completed_phases(state: FactoryState) -> list[Phase]:
+    """Get list of phases that have been completed."""
+    completed = []
+    for phase in Phase:
+        status = state.phase_statuses.get(phase.value)
+        if status in (PhaseStatus.COMPLETED, PhaseStatus.APPROVED):
+            completed.append(phase)
+    return completed
+
+
+def _upload_phase_pdf(channel_id: str, state: FactoryState, phase: Phase) -> Optional[str]:
+    """Generate and upload PDF for a phase, returning the file permalink."""
+    try:
+        from src.reports.pdf import generate_phase_report_pdf
+
+        pdf_path = generate_phase_report_pdf(state, phase)
+        if not pdf_path:
+            return None
+
+        opp_name = state.handoff.opportunity.name
+        phase_title = phase.value.replace("_", " ").title()
+
+        result = app.client.files_upload_v2(
+            channel=channel_id,
+            file=pdf_path,
+            title=f"{opp_name} - {phase_title} Report",
+            initial_comment=f"*{phase_title} Phase Complete*\n\nFull output attached below.",
+        )
+
+        # Return permalink if available
+        file_info = result.get("file", {})
+        return file_info.get("permalink")
+
+    except Exception as e:
+        logger.warning(f"Failed to generate/upload phase PDF: {e}")
+        return None
 
 
 def send_phase_update(channel_id: str, state: FactoryState, phase: Phase):
@@ -34,24 +73,60 @@ def send_phase_update(channel_id: str, state: FactoryState, phase: Phase):
 
 
 def send_checkpoint_request(channel_id: str, state: FactoryState):
-    """Send checkpoint approval request."""
+    """Send checkpoint approval request with PDF of completed phase output."""
     phase = state.current_phase
+    opp_name = state.handoff.opportunity.name
+    phase_title = phase.value.replace("_", " ").title()
 
     try:
+        # First, upload the PDF of the completed phase output
+        _upload_phase_pdf(channel_id, state, phase)
+
+        # Then send the approval request message
         app.client.chat_postMessage(
             channel=channel_id,
-            text=f"⏸️ *Checkpoint: {phase.value.replace('_', ' ').title()}*\n\n"
+            text=f"⏸️ *Checkpoint: {phase_title} for {opp_name}*\n\n"
             f"Factory is waiting for approval to continue.\n"
-            f"Review the outputs in Linear, then click below to proceed.",
+            f"Review the outputs above and in Linear, then click below to proceed.",
             blocks=[
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"⏸️ Checkpoint: {phase_title}",
+                        "emoji": True,
+                    },
+                },
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"⏸️ *Checkpoint: {phase.value.replace('_', ' ').title()}*\n\n"
+                        "text": f"*{opp_name}*\n\n"
                         f"Factory is waiting for approval to continue.\n"
-                        f"📋 <{state.handoff.linear_project_url}|View in Linear>",
+                        f"Review the PDF report above and details in Linear.",
                     },
+                },
+                {
+                    "type": "section",
+                    "fields": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Current Phase:*\n{phase_title}",
+                        },
+                        {
+                            "type": "mrkdwn",
+                            "text": f"*Project:*\n<{state.handoff.linear_project_url}|View in Linear>",
+                        },
+                    ],
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "_You can also approve from Linear by commenting 'approve' or 'lgtm' on the phase issue._",
+                        },
+                    ],
                 },
                 {"type": "divider"},
                 {
@@ -59,14 +134,14 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "✅ Approve & Continue"},
+                            "text": {"type": "plain_text", "text": "✅ Approve & Continue", "emoji": True},
                             "style": "primary",
                             "value": f"{state.execution_id}:{phase.value}",
                             "action_id": "approve_checkpoint",
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "❌ Stop Factory"},
+                            "text": {"type": "plain_text", "text": "❌ Stop Factory", "emoji": True},
                             "style": "danger",
                             "value": state.execution_id,
                             "action_id": "stop_factory",

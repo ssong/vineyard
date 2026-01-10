@@ -670,8 +670,8 @@ def _handle_factory_build(respond: Respond, command: dict, shared_app: App):
         # Use alerts channel for notifications (fall back to command channel)
         notification_channel = slack_channels.get("alerts", channel_id)
 
-        # Run factory
-        result = run_factory(state)
+        # Run factory with notification channel for checkpoint messages
+        result = run_factory(state, notification_channel)
 
         # Post final status
         if result.completed_at:
