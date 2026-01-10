@@ -101,8 +101,13 @@ Write a technical spec in markdown with:
 """
 
         try:
+            # Use extended thinking for architecture decisions
             return llm.generate(
-                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                SPEC_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=10000,
             )
         except Exception as e:
             self.logger.error(f"Failed to generate tech spec: {e}")
@@ -153,8 +158,13 @@ Include:
 """
 
         try:
+            # Use extended thinking for API design decisions
             result = llm.generate_json(
-                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                SPEC_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=6000,
             )
             endpoints = []
 
@@ -208,8 +218,13 @@ Include tables for:
 """
 
         try:
+            # Use extended thinking for database schema design
             result = llm.generate_json(
-                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                SPEC_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=6000,
             )
             tables = []
 
@@ -305,8 +320,13 @@ Include tasks for:
 """
 
         try:
+            # Use extended thinking for task breakdown and estimation
             result = llm.generate_json(
-                SPEC_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                SPEC_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=8000,
             )
             tasks = []
 

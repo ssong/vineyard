@@ -97,8 +97,13 @@ Provide a JSON response with:
 }}"""
 
         try:
+            # Use extended thinking for financial projections and scoring
             result = llm.generate_json(
-                SCORING_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                SCORING_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=8000,
             )
 
             forecast_data = result.get("revenue_forecast", {})

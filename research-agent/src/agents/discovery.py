@@ -102,8 +102,13 @@ For each opportunity, provide a JSON array with objects containing:
 Return ONLY a JSON array of 5 opportunities."""
 
         try:
+            # Use extended thinking for complex market analysis
             result = llm.generate_json(
-                DISCOVERY_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
+                DISCOVERY_AGENT_PROMPT,
+                user_prompt,
+                model=llm.MODEL_OPUS,
+                use_extended_thinking=True,
+                thinking_budget=8000,
             )
 
             opportunities = []
