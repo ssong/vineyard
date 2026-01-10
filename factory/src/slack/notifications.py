@@ -26,10 +26,14 @@ def _upload_phase_pdf(channel_id: str, state: FactoryState, phase: Phase) -> Opt
     try:
         from src.reports.pdf import generate_phase_report_pdf
 
+        logger.info(f"Generating PDF for phase: {phase.value}")
         pdf_path = generate_phase_report_pdf(state, phase)
+
         if not pdf_path:
+            logger.warning(f"No PDF generated for phase {phase.value} - no output available")
             return None
 
+        logger.info(f"Uploading PDF: {pdf_path}")
         opp_name = state.handoff.opportunity.name
         phase_title = phase.value.replace("_", " ").title()
 
@@ -37,15 +41,17 @@ def _upload_phase_pdf(channel_id: str, state: FactoryState, phase: Phase) -> Opt
             channel=channel_id,
             file=pdf_path,
             title=f"{opp_name} - {phase_title} Report",
-            initial_comment=f"*{phase_title} Phase Complete*\n\nFull output attached below.",
+            initial_comment=f"📄 *{phase_title} Report*",
         )
 
         # Return permalink if available
         file_info = result.get("file", {})
-        return file_info.get("permalink")
+        permalink = file_info.get("permalink")
+        logger.info(f"PDF uploaded successfully: {permalink}")
+        return permalink
 
     except Exception as e:
-        logger.warning(f"Failed to generate/upload phase PDF: {e}")
+        logger.error(f"Failed to generate/upload phase PDF for {phase.value}: {e}", exc_info=True)
         return None
 
 
@@ -72,28 +78,48 @@ def send_phase_update(channel_id: str, state: FactoryState, phase: Phase):
         logger.error(f"Failed to send phase update: {e}")
 
 
+def _get_previous_phase(phase: Phase) -> Phase:
+    """Get the phase that comes before the given phase."""
+    phases = list(Phase)
+    idx = phases.index(phase)
+    if idx > 0:
+        return phases[idx - 1]
+    return phase
+
+
 def send_checkpoint_request(channel_id: str, state: FactoryState):
-    """Send checkpoint approval request with PDF of completed phase output."""
-    phase = state.current_phase
+    """Send checkpoint approval request with PDF of completed phase outputs."""
+    pending_phase = state.current_phase
     opp_name = state.handoff.opportunity.name
-    phase_title = phase.value.replace("_", " ").title()
+    pending_phase_title = pending_phase.value.replace("_", " ").title()
 
     try:
-        # First, upload the PDF of the completed phase output
-        _upload_phase_pdf(channel_id, state, phase)
+        # Upload PDFs for all completed phases (the work to review before approving)
+        completed_phases = _get_completed_phases(state)
+        uploaded_any = False
+
+        for completed_phase in completed_phases:
+            if state.phase_outputs.get(completed_phase.value):
+                result = _upload_phase_pdf(channel_id, state, completed_phase)
+                if result:
+                    uploaded_any = True
+
+        # Build summary of what's been completed
+        completed_summary = ", ".join(
+            [p.value.replace("_", " ").title() for p in completed_phases]
+        ) if completed_phases else "Initial setup"
 
         # Then send the approval request message
         app.client.chat_postMessage(
             channel=channel_id,
-            text=f"⏸️ *Checkpoint: {phase_title} for {opp_name}*\n\n"
-            f"Factory is waiting for approval to continue.\n"
-            f"Review the outputs above and in Linear, then click below to proceed.",
+            text=f"⏸️ *Checkpoint: Ready for {pending_phase_title}*\n\n"
+            f"Review the completed work before proceeding to {pending_phase_title}.",
             blocks=[
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": f"⏸️ Checkpoint: {phase_title}",
+                        "text": f"⏸️ Checkpoint: Ready for {pending_phase_title}",
                         "emoji": True,
                     },
                 },
@@ -102,8 +128,9 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
                     "text": {
                         "type": "mrkdwn",
                         "text": f"*{opp_name}*\n\n"
-                        f"Factory is waiting for approval to continue.\n"
-                        f"Review the PDF report above and details in Linear.",
+                        f"The following phases have been completed:\n"
+                        f"✅ {completed_summary}\n\n"
+                        f"Review the reports above and in Linear before approving.",
                     },
                 },
                 {
@@ -111,7 +138,7 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
                     "fields": [
                         {
                             "type": "mrkdwn",
-                            "text": f"*Current Phase:*\n{phase_title}",
+                            "text": f"*Next Phase:*\n{pending_phase_title}",
                         },
                         {
                             "type": "mrkdwn",
@@ -134,9 +161,9 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "✅ Approve & Continue", "emoji": True},
+                            "text": {"type": "plain_text", "text": f"✅ Approve & Start {pending_phase_title}", "emoji": True},
                             "style": "primary",
-                            "value": f"{state.execution_id}:{phase.value}",
+                            "value": f"{state.execution_id}:{pending_phase.value}",
                             "action_id": "approve_checkpoint",
                         },
                         {
