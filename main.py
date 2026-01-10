@@ -3,9 +3,9 @@
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
 
-APPROACH: Create temporary apps for each project, import their handlers
-(which register via decorators), then copy the registered listeners to
-our shared app.
+APPROACH: Pre-inject a fake src.slack.app module into sys.modules that contains
+our shared app. When command/interaction modules are imported, their decorators
+(@app.command, @app.action, etc.) register handlers directly to the shared app.
 """
 
 import argparse
@@ -62,68 +62,80 @@ def create_shared_app(settings):
     return App(token=settings.slack_bot_token)
 
 
-def copy_listeners(from_app, to_app):
-    """Copy all registered listeners from one App to another.
-    
-    Slack Bolt stores listeners in internal registries. We need to copy
-    them to our shared app so they respond to events.
+def inject_app_module(project_path, shared_app):
+    """Inject a pre-made src.slack.app module with our shared app.
+
+    This ensures that when command modules do `from src.slack.app import app`,
+    they get our shared app instance, and decorators register to it directly.
     """
-    # Copy command listeners
-    if hasattr(from_app, '_listeners'):
-        for listener in from_app._listeners:
-            to_app._listeners.append(listener)
-    
-    # Copy from listener_runner if present
-    if hasattr(from_app, '_listener_runner') and hasattr(from_app._listener_runner, 'listeners'):
-        for listener in from_app._listener_runner.listeners:
-            if listener not in to_app._listener_runner.listeners:
-                to_app._listener_runner.listeners.append(listener)
+    import types
+
+    # Create the module hierarchy
+    src_module = types.ModuleType('src')
+    src_module.__path__ = [os.path.join(project_path, 'src')]
+
+    slack_module = types.ModuleType('src.slack')
+    slack_module.__path__ = [os.path.join(project_path, 'src', 'slack')]
+
+    app_module = types.ModuleType('src.slack.app')
+    app_module.app = shared_app
+    app_module.__file__ = os.path.join(project_path, 'src', 'slack', 'app.py')
+
+    # Wire up the module hierarchy
+    src_module.slack = slack_module
+
+    # The __init__.py does `from .app import app`, so src.slack.app should be:
+    # 1. A module (src.slack.app) with an `app` attribute
+    # 2. Also exported as src.slack.app (the App instance) from __init__.py
+    # We set both: the submodule reference and the direct app instance
+    setattr(slack_module, 'app', shared_app)  # src.slack.app = App instance (from __init__.py export)
+
+    # Inject into sys.modules
+    sys.modules['src'] = src_module
+    sys.modules['src.slack'] = slack_module
+    sys.modules['src.slack.app'] = app_module  # src.slack.app module
 
 
 def register_research_agent_handlers(shared_app, settings):
     """Register Research Agent handlers."""
     set_project_path(RESEARCH_AGENT_PATH)
     clear_src_modules()
-    
-    # Create a temporary app that handlers will register to
-    temp_app = App(token=settings.slack_bot_token)
-    
-    # Patch the app module to use our temp app
-    import src.slack.app as slack_app_module
-    slack_app_module.app = temp_app
-    
-    # Import handlers - they register to temp_app via decorators
+
+    # Pre-inject the app module with our shared app BEFORE importing commands
+    # This ensures decorators register directly to shared_app
+    inject_app_module(RESEARCH_AGENT_PATH, shared_app)
+
+    # Track listener count before import
+    before_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
+
+    # Import handlers - decorators register directly to shared_app
     from src.slack import commands  # noqa: F401
     from src.slack import interactions  # noqa: F401
-    
-    # Copy registered listeners to shared app
-    copy_listeners(temp_app, shared_app)
-    
-    listener_count = len(temp_app._listeners) if hasattr(temp_app, '_listeners') else 0
-    logger.info(f"✓ Research Agent handlers registered ({listener_count} listeners)")
+
+    after_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
+    new_listeners = after_count - before_count
+    logger.info(f"✓ Research Agent handlers registered ({new_listeners} listeners)")
 
 
 def register_factory_handlers(shared_app, settings):
     """Register Factory handlers."""
     set_project_path(FACTORY_PATH)
     clear_src_modules()
-    
-    # Create a temporary app that handlers will register to
-    temp_app = App(token=settings.slack_bot_token)
-    
-    # Patch the app module to use our temp app
-    import src.slack.app as slack_app_module
-    slack_app_module.app = temp_app
-    
-    # Import handlers - they register to temp_app via decorators
+
+    # Pre-inject the app module with our shared app BEFORE importing commands
+    # This ensures decorators register directly to shared_app
+    inject_app_module(FACTORY_PATH, shared_app)
+
+    # Track listener count before import
+    before_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
+
+    # Import handlers - decorators register directly to shared_app
     from src.slack import commands  # noqa: F401
     from src.slack import interactions  # noqa: F401
-    
-    # Copy registered listeners to shared app
-    copy_listeners(temp_app, shared_app)
-    
-    listener_count = len(temp_app._listeners) if hasattr(temp_app, '_listeners') else 0
-    logger.info(f"✓ Factory handlers registered ({listener_count} listeners)")
+
+    after_count = len(shared_app._listeners) if hasattr(shared_app, '_listeners') else 0
+    new_listeners = after_count - before_count
+    logger.info(f"✓ Factory handlers registered ({new_listeners} listeners)")
 
 
 def start_api_server(settings):
