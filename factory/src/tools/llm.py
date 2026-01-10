@@ -283,6 +283,10 @@ def generate(
         logger.debug(f"Extended thinking enabled with budget: {thinking_budget} tokens, max_tokens: {request_params['max_tokens']}")
 
     try:
+        # Use streaming for extended thinking (required for long operations)
+        if use_extended_thinking:
+            return _generate_with_streaming(client, request_params)
+
         message = client.messages.create(**request_params)
 
         # Log cache performance if available
@@ -294,15 +298,6 @@ def generate(
                 logger.info(
                     f"Prompt cache: read={cache_read}, created={cache_create} tokens"
                 )
-
-        # Handle extended thinking response (may have thinking blocks)
-        if use_extended_thinking:
-            # Find the text response (skip thinking blocks)
-            for block in message.content:
-                if block.type == "text":
-                    return block.text
-            # Fallback if no text block found
-            return message.content[0].text if message.content else ""
 
         return message.content[0].text
 
@@ -324,6 +319,50 @@ def generate(
             message = client.messages.create(**request_params)
             return message.content[0].text
         raise
+
+
+def _generate_with_streaming(client: anthropic.Anthropic, request_params: dict) -> str:
+    """Generate response using streaming (required for extended thinking).
+
+    Anthropic requires streaming for operations that may take longer than 10 minutes.
+    Extended thinking operations often exceed this threshold.
+    """
+    text_content = []
+
+    with client.messages.stream(**request_params) as stream:
+        for event in stream:
+            # Handle content block deltas
+            if hasattr(event, 'type'):
+                if event.type == 'content_block_delta':
+                    delta = event.delta
+                    if hasattr(delta, 'text'):
+                        text_content.append(delta.text)
+
+        # Get the final message for logging
+        final_message = stream.get_final_message()
+
+        # Log cache performance if available
+        if hasattr(final_message, 'usage') and final_message.usage:
+            usage = final_message.usage
+            cache_read = getattr(usage, 'cache_read_input_tokens', 0)
+            cache_create = getattr(usage, 'cache_creation_input_tokens', 0)
+            if cache_read or cache_create:
+                logger.info(
+                    f"Prompt cache: read={cache_read}, created={cache_create} tokens"
+                )
+
+    # If we collected text from deltas, return it
+    if text_content:
+        return ''.join(text_content)
+
+    # Fallback: get text from final message content blocks
+    if final_message and final_message.content:
+        for block in final_message.content:
+            if block.type == "text":
+                return block.text
+        return final_message.content[0].text if final_message.content else ""
+
+    return ""
 
 
 def generate_json(
