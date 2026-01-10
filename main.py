@@ -85,8 +85,13 @@ def patch_and_register_factory(app):
     logger.info("✓ Factory handlers registered")
 
 
-def start_api_server(settings):
+def start_api_server(settings, factory_path):
     """Start the Factory API server for Linear webhooks."""
+    # Ensure factory is in path (thread may have different context)
+    import sys
+    if factory_path not in sys.path:
+        sys.path.insert(0, factory_path)
+    
     from src.api.server import start_server
     
     logger.info(f"Starting API server on {settings.api_host}:{settings.api_port}")
@@ -143,7 +148,7 @@ def main():
             logger.info("Starting API server in background...")
             api_thread = threading.Thread(
                 target=start_api_server,
-                args=(settings,),
+                args=(settings, factory_path),
                 daemon=True
             )
             api_thread.start()
