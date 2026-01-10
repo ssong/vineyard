@@ -2,10 +2,14 @@
 
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
+
+IMPORTANT: This script expects PYTHONPATH to include both subdirectories:
+  PYTHONPATH=/app:/app/research-agent:/app/factory
 """
 
 import argparse
 import logging
+import os
 import sys
 import threading
 
@@ -24,9 +28,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def setup_paths():
+    """Add subdirectories to Python path if not already set via PYTHONPATH."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    
+    research_path = os.path.join(base, "research-agent")
+    factory_path = os.path.join(base, "factory")
+    
+    if research_path not in sys.path:
+        sys.path.insert(0, research_path)
+    if factory_path not in sys.path:
+        sys.path.insert(0, factory_path)
+
+
 def get_settings():
-    """Load settings from factory config."""
-    from factory.src.config import settings
+    """Load settings from factory config.
+    
+    Factory settings include all required vars (Slack, Anthropic, Linear, etc.)
+    """
+    # Import from factory's src.config (works because factory/ is in PYTHONPATH)
+    from src.config import settings
     return settings
 
 
@@ -35,36 +56,39 @@ def create_shared_app(settings):
     return App(token=settings.slack_bot_token)
 
 
-def register_research_agent_handlers(app):
-    """Register Research Agent slash commands and interactions."""
-    # Patch the app module to use our shared app
-    import research_agent.src.slack.app as research_app_module
-    research_app_module.app = app
-
-    # Import handlers (they auto-register via decorators)
-    from research_agent.src.slack import commands  # noqa: F401
-    from research_agent.src.slack import interactions  # noqa: F401
-
+def patch_and_register_research_agent(app):
+    """Patch research-agent's app module and register handlers.
+    
+    We need to patch the app module BEFORE importing handlers,
+    because handlers use @app.command() decorators that register on import.
+    """
+    # Temporarily switch to research-agent context
+    import src.slack.app as slack_app_module
+    original_app = getattr(slack_app_module, 'app', None)
+    slack_app_module.app = app
+    
+    # Now import handlers - they'll register with our shared app
+    from src.slack import commands  # noqa: F401
+    from src.slack import interactions  # noqa: F401
+    
     logger.info("✓ Research Agent handlers registered")
 
 
-def register_factory_handlers(app):
-    """Register Factory slash commands and interactions."""
-    # Patch the app module to use our shared app
-    import factory.src.slack.app as factory_app_module
-    factory_app_module.app = app
-
-    # Import handlers (they auto-register via decorators)
-    from factory.src.slack import commands  # noqa: F401
-    from factory.src.slack import interactions  # noqa: F401
-
+def patch_and_register_factory(app):
+    """Patch factory's app module and register handlers."""
+    import src.slack.app as slack_app_module
+    slack_app_module.app = app
+    
+    from src.slack import commands  # noqa: F401
+    from src.slack import interactions  # noqa: F401
+    
     logger.info("✓ Factory handlers registered")
 
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
-    from factory.src.api.server import start_server
-
+    from src.api.server import start_server
+    
     logger.info(f"Starting API server on {settings.api_host}:{settings.api_port}")
     start_server(host=settings.api_host, port=settings.api_port)
 
@@ -80,11 +104,15 @@ def main():
     )
     args = parser.parse_args()
 
+    # Ensure paths are set up for local development
+    setup_paths()
+
     logger.info("=" * 60)
     logger.info("Vineyard Bot - Unified Research Agent + Factory")
     logger.info("=" * 60)
 
     try:
+        # Get settings (uses factory's config since it has everything)
         settings = get_settings()
 
         if args.mode == "api":
@@ -96,8 +124,20 @@ def main():
         app = create_shared_app(settings)
 
         # Register handlers from both systems
-        register_research_agent_handlers(app)
-        register_factory_handlers(app)
+        # Research agent first (temporarily adjust path priority)
+        research_path = os.path.join(os.path.dirname(__file__), "research-agent")
+        factory_path = os.path.join(os.path.dirname(__file__), "factory")
+        
+        # Register research-agent handlers
+        if research_path in sys.path:
+            sys.path.remove(research_path)
+        sys.path.insert(0, research_path)
+        patch_and_register_research_agent(app)
+        
+        # Register factory handlers  
+        sys.path.remove(research_path)
+        sys.path.insert(0, factory_path)
+        patch_and_register_factory(app)
 
         if args.mode == "all":
             logger.info("Starting API server in background...")
@@ -129,4 +169,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

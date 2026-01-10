@@ -47,17 +47,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application code
-# Using directory names that work as Python packages
+# Copy application code - keep original directory names!
 COPY main.py ./
-COPY research-agent/ ./research_agent/
+COPY research-agent/ ./research-agent/
 COPY factory/ ./factory/
-
-# Create __init__.py files to make them proper packages
-RUN touch research_agent/__init__.py && \
-    touch research_agent/src/__init__.py && \
-    touch factory/__init__.py && \
-    touch factory/src/__init__.py
 
 # Create required directories
 RUN mkdir -p /app/outputs /app/state && chmod 755 /app/outputs /app/state
@@ -77,7 +70,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONPATH=/app
+
+# CRITICAL: Add both subdirectories to PYTHONPATH so internal imports work
+# Each project's internal `from src.*` imports will resolve correctly
+ENV PYTHONPATH=/app:/app/research-agent:/app/factory
 
 # Default: run both Slack bot and API server
 CMD ["python", "main.py"]
@@ -85,3 +81,4 @@ CMD ["python", "main.py"]
 # Alternative modes:
 # API only: CMD ["python", "main.py", "--mode", "api"]
 # Slack only: CMD ["python", "main.py", "--mode", "slack"]
+
