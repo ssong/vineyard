@@ -36,5 +36,8 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Operator settings
+    operator_slack_user_id: str = ""  # Operator gets added to all opportunity channels
+
 
 settings = Settings()

@@ -151,6 +151,8 @@ class FactoryState:
     started_at: datetime = field(default_factory=datetime.utcnow)
     last_updated_at: datetime = field(default_factory=datetime.utcnow)
     completed_at: Optional[datetime] = None
+    # Slack channels created for this opportunity
+    slack_channels: dict[str, str] = field(default_factory=dict)
 
     def update_phase_status(self, phase: Phase, status: PhaseStatus):
         """Update status of a phase."""

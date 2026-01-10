@@ -70,8 +70,34 @@ def handle_build_command(respond: Respond, command: dict):
         # Create factory run
         state = create_factory_run(handoff)
 
+        # Create opportunity Slack channels
+        from src.slack.channels import create_opportunity_channels
+        from src.orchestrator.persistence import save_state
+
+        slack_channels = create_opportunity_channels(
+            opportunity_slug=handoff.opportunity.slug,
+            opportunity_name=handoff.opportunity.name,
+        )
+        state.slack_channels = slack_channels
+
+        # Save state with channel info
+        save_state(state)
+
+        # Post initial message to main channel if created
+        if "main" in slack_channels:
+            from src.slack.app import app as slack_app
+            slack_app.client.chat_postMessage(
+                channel=slack_channels["main"],
+                text=f"🏭 *Factory run started for {handoff.opportunity.name}*\n\n"
+                f"📋 <{handoff.linear_project_url}|View in Linear>\n\n"
+                "_Automated updates will be posted to #{}-alerts_".format(handoff.opportunity.slug),
+            )
+
+        # Use alerts channel for notifications (fall back to command channel)
+        notification_channel = slack_channels.get("alerts", channel_id)
+
         # Run factory
-        _run_factory_async(state, channel_id)
+        _run_factory_async(state, notification_channel)
 
     except Exception as e:
         logger.exception("Factory failed to start")
