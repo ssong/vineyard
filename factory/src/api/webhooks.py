@@ -138,6 +138,20 @@ APPROVAL_KEYWORDS = [
     "proceed",
 ]
 
+# Users authorized to trigger approvals and retries via Linear comments
+# This prevents the bot's own comments from triggering loops
+# Names are matched case-insensitively
+AUTHORIZED_COMMENTERS = [
+    "sang",
+]
+
+
+def is_authorized_commenter(commenter_name: str) -> bool:
+    """Check if the commenter is authorized to trigger actions."""
+    if not commenter_name:
+        return False
+    return commenter_name.lower() in [name.lower() for name in AUTHORIZED_COMMENTERS]
+
 # States that trigger a retry when transitioned TO (from a failed state)
 RETRY_TARGET_STATES = [
     "todo",
@@ -570,9 +584,14 @@ async def handle_comment_created(
 
     logger.info(f"Comment on {issue_identifier} by {commenter_name}: {body[:50]}...")
 
+    # Only process comments from authorized users to prevent loops
+    if not is_authorized_commenter(commenter_name):
+        logger.debug(f"Ignoring comment from unauthorized user: {commenter_name}")
+        return
+
     # Check for approval keywords first (checkpoint approval)
     if should_approve(body):
-        logger.info(f"Approval keyword detected in comment on {issue_identifier}")
+        logger.info(f"Approval keyword detected in comment on {issue_identifier} by {commenter_name}")
         background_tasks.add_task(
             handle_approval_request,
             issue_id,
@@ -584,7 +603,7 @@ async def handle_comment_created(
 
     # Check for retry keywords (resume failed phases)
     if should_retry(body):
-        logger.info(f"Retry keyword detected in comment on {issue_identifier}")
+        logger.info(f"Retry keyword detected in comment on {issue_identifier} by {commenter_name}")
         background_tasks.add_task(
             handle_retry_request,
             issue_id,
@@ -749,6 +768,7 @@ async def linear_webhook_status():
     """Check webhook configuration status."""
     return {
         "webhook_secret_configured": bool(settings.linear_webhook_secret),
+        "authorized_commenters": AUTHORIZED_COMMENTERS,
         "triggers": {
             "approval_keywords": APPROVAL_KEYWORDS,
             "retry_keywords": RETRY_KEYWORDS,
