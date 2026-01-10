@@ -33,12 +33,32 @@ RESEARCH_AGENT_PATH = os.path.join(BASE_DIR, "research-agent")
 FACTORY_PATH = os.path.join(BASE_DIR, "factory")
 
 
+def clear_src_modules():
+    """Clear all src.* modules from sys.modules.
+    
+    This must be done before importing from a different project's src package.
+    Uses list() to avoid 'dictionary changed size during iteration' error.
+    """
+    modules_to_remove = [key for key in list(sys.modules.keys()) 
+                         if key.startswith('src.') or key == 'src']
+    for mod in modules_to_remove:
+        del sys.modules[mod]
+    return len(modules_to_remove)
+
+
+def set_project_path(project_path):
+    """Set a project path at the front of sys.path.
+    
+    Removes it first if already present to ensure it's at the front.
+    """
+    if project_path in sys.path:
+        sys.path.remove(project_path)
+    sys.path.insert(0, project_path)
+
+
 def get_factory_settings():
     """Load settings from factory config."""
-    # Add factory to path
-    if FACTORY_PATH not in sys.path:
-        sys.path.insert(0, FACTORY_PATH)
-    
+    set_project_path(FACTORY_PATH)
     from src.config import settings
     return settings
 
@@ -49,23 +69,12 @@ def create_shared_app(settings):
 
 
 def register_research_agent_handlers(app):
-    """Register Research Agent handlers by patching app before import.
+    """Register Research Agent handlers by patching app before import."""
+    set_project_path(RESEARCH_AGENT_PATH)
+    cleared = clear_src_modules()
+    logger.debug(f"Cleared {cleared} src.* modules for research-agent")
     
-    IMPORTANT: We must patch src.slack.app BEFORE importing handlers,
-    because @app.command decorators execute at import time.
-    """
-    # Add research-agent path first
-    if RESEARCH_AGENT_PATH in sys.path:
-        sys.path.remove(RESEARCH_AGENT_PATH)
-    sys.path.insert(0, RESEARCH_AGENT_PATH)
-    
-    # Remove any cached imports from factory
-    modules_to_remove = [key for key in sys.modules.keys() 
-                         if key.startswith('src.')]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
-    
-    # Now import and patch the app module BEFORE importing handlers
+    # Import and patch the app module BEFORE importing handlers
     import src.slack.app as slack_app_module
     slack_app_module.app = app
     
@@ -78,16 +87,9 @@ def register_research_agent_handlers(app):
 
 def register_factory_handlers(app):
     """Register Factory handlers by patching app before import."""
-    # Add factory path first
-    if FACTORY_PATH in sys.path:
-        sys.path.remove(FACTORY_PATH)
-    sys.path.insert(0, FACTORY_PATH)
-    
-    # Clear cached src.* modules from research-agent
-    modules_to_remove = [key for key in sys.modules.keys() 
-                         if key.startswith('src.')]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
+    set_project_path(FACTORY_PATH)
+    cleared = clear_src_modules()
+    logger.debug(f"Cleared {cleared} src.* modules for factory")
     
     # Import and patch the app module BEFORE importing handlers
     import src.slack.app as slack_app_module
@@ -102,16 +104,9 @@ def register_factory_handlers(app):
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
-    # Put factory at the front of sys.path
-    if FACTORY_PATH in sys.path:
-        sys.path.remove(FACTORY_PATH)
-    sys.path.insert(0, FACTORY_PATH)
-    
-    # Clear all stale src.* modules to ensure fresh imports from factory
-    modules_to_remove = [key for key in sys.modules.keys() 
-                         if key.startswith('src.')]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
+    set_project_path(FACTORY_PATH)
+    cleared = clear_src_modules()
+    logger.debug(f"Cleared {cleared} src.* modules for API server")
     
     from src.api.server import start_server
     
@@ -133,6 +128,9 @@ def main():
     logger.info("=" * 60)
     logger.info("Vineyard Bot - Unified Research Agent + Factory")
     logger.info("=" * 60)
+    logger.debug(f"BASE_DIR: {BASE_DIR}")
+    logger.debug(f"RESEARCH_AGENT_PATH: {RESEARCH_AGENT_PATH}")
+    logger.debug(f"FACTORY_PATH: {FACTORY_PATH}")
 
     try:
         # Get settings (uses factory's config)
@@ -147,7 +145,6 @@ def main():
         app = create_shared_app(settings)
 
         # Register handlers from both systems
-        # Order matters - research agent first, then factory
         register_research_agent_handlers(app)
         register_factory_handlers(app)
 
