@@ -7,6 +7,7 @@ Complete guide to deploying the unified Vineyard Bot using Docker CLI.
 - Docker installed on your server
 - Slack App with Socket Mode enabled
 - API keys: Anthropic, Linear, Tavily
+- Redis server (running on host or separate container)
 
 ## Quick Start
 
@@ -20,21 +21,30 @@ cp .env.example .env
 # 3. Edit .env with your API keys
 nano .env
 
-# 4. Build the Docker image
-docker build -t vineyard-bot .
+# 4. Create required directories
+mkdir -p outputs state
+chmod 755 outputs state
 
-# 5. Run the container
+# 5. Build the Docker image
+docker build -t vineyard .
+
+# 6. Run the container (with host Redis access)
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
+  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
-  vineyard-bot
+  vineyard
 
-# 6. Check it's running
-docker logs -f vineyard-bot
+# 7. Check it's running
+docker logs -f vineyard
+
+# 8. Verify health check
+curl http://localhost:8000/health
 ```
 
 ---
@@ -45,37 +55,39 @@ docker logs -f vineyard-bot
 
 ```bash
 # Build with default tag
-docker build -t vineyard-bot .
+docker build -t vineyard .
 
 # Build with version tag
-docker build -t vineyard-bot:1.0.0 .
+docker build -t vineyard:1.0.0 .
 
 # Build with no cache (useful after dependency updates)
-docker build --no-cache -t vineyard-bot .
+docker build --no-cache -t vineyard .
 ```
 
 ### Running the Container
 
-**Full deployment (Slack bot + API server):**
+**Full deployment (Slack bot + API server + Redis on host):**
 ```bash
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
+  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
-  vineyard-bot
+  vineyard
 ```
 
 **Slack-only mode (no API server):**
 ```bash
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
   --env-file .env \
   -v $(pwd)/outputs:/app/outputs \
-  vineyard-bot python main.py --mode slack
+  vineyard python main.py --mode slack
 ```
 
 **API-only mode (for webhooks only):**
@@ -85,7 +97,7 @@ docker run -d \
   --restart unless-stopped \
   --env-file .env \
   -p 8000:8000 \
-  vineyard-bot python main.py --mode api
+  vineyard python main.py --mode api
 ```
 
 ### Volume Mounts Explained
@@ -119,26 +131,26 @@ sudo chown -R 1000:1000 outputs state
 
 ```bash
 # Follow logs in real-time
-docker logs -f vineyard-bot
+docker logs -f vineyard
 
 # Show last 100 lines
-docker logs --tail 100 vineyard-bot
+docker logs --tail 100 vineyard
 
 # Show logs with timestamps
-docker logs -t vineyard-bot
+docker logs -t vineyard
 ```
 
 ### Stop and Start
 
 ```bash
 # Stop the container
-docker stop vineyard-bot
+docker stop vineyard
 
 # Start it again
-docker start vineyard-bot
+docker start vineyard
 
 # Restart
-docker restart vineyard-bot
+docker restart vineyard
 ```
 
 ### Updating the Bot
@@ -148,38 +160,40 @@ docker restart vineyard-bot
 git pull origin main
 
 # Rebuild image
-docker build -t vineyard-bot .
+docker build -t vineyard .
 
 # Stop and remove old container
-docker stop vineyard-bot
-docker rm vineyard-bot
+docker stop vineyard
+docker rm vineyard
 
 # Run new container
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
   --env-file .env \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
-  vineyard-bot
+  vineyard
 ```
 
 ### One-liner Update Script
 
 ```bash
 git pull && \
-docker build -t vineyard-bot . && \
-docker rm -f vineyard-bot && \
+docker build -t vineyard . && \
+docker rm -f vineyard && \
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
+  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
+  -e REDIS_URL=redis://host.docker.internal:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
-  vineyard-bot && \
-docker logs -f vineyard-bot
+  vineyard && \
+docker logs -f vineyard
 ```
 
 ---
@@ -216,10 +230,10 @@ The container includes a health check hitting `GET /health`:
 
 ```bash
 # Check health status
-docker inspect --format='{{.State.Health.Status}}' vineyard-bot
+docker inspect --format='{{.State.Health.Status}}' vineyard
 
 # View health logs
-docker inspect --format='{{json .State.Health}}' vineyard-bot | jq
+docker inspect --format='{{json .State.Health}}' vineyard | jq
 ```
 
 ---
@@ -238,7 +252,7 @@ chmod 755 outputs state
 
 ```bash
 # Check what's wrong
-docker logs --tail 50 vineyard-bot
+docker logs --tail 50 vineyard
 
 # Common issues:
 # - Missing API keys in .env
@@ -253,13 +267,13 @@ docker logs --tail 50 vineyard-bot
 lsof -i :8000
 
 # Use a different port
-docker run ... -p 8001:8000 vineyard-bot
+docker run ... -p 8001:8000 vineyard
 ```
 
 ### Slack commands not responding
 
 1. Check container is running: `docker ps | grep vineyard`
-2. Check logs for errors: `docker logs vineyard-bot`
+2. Check logs for errors: `docker logs vineyard`
 3. Verify Socket Mode is enabled in Slack App settings
 4. Confirm `SLACK_APP_TOKEN` starts with `xapp-`
 
@@ -279,13 +293,13 @@ cat research-agent/.env factory/.env | sort -u > .env
 # Then edit .env to remove duplicates
 
 # 3. Build and run unified bot
-docker build -t vineyard-bot .
+docker build -t vineyard .
 docker run -d \
-  --name vineyard-bot \
+  --name vineyard \
   --restart unless-stopped \
   --env-file .env \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
-  vineyard-bot
+  vineyard
 ```

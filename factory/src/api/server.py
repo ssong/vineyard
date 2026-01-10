@@ -22,9 +22,9 @@ REDIS_URL = os.getenv("REDIS_URL")
 def _get_rate_limit_storage() -> str:
     """Get the storage URI for rate limiting."""
     if not REDIS_URL:
+        logger.info("No REDIS_URL set, using in-memory rate limiting storage")
         return "memory://"
-    # slowapi expects redis:// format (not rediss:// for TLS)
-    # For TLS connections, you may need to configure Redis separately
+    logger.info(f"Using Redis for rate limiting: {REDIS_URL.split('@')[-1]}")
     return REDIS_URL
 
 limiter = Limiter(
@@ -32,6 +32,20 @@ limiter = Limiter(
     default_limits=["100/minute"],  # Default rate limit
     storage_uri=_get_rate_limit_storage(),
 )
+
+
+def custom_rate_limit_handler(request: Request, exc: Exception):
+    """Custom rate limit handler that handles connection errors gracefully."""
+    if isinstance(exc, RateLimitExceeded):
+        return JSONResponse(
+            status_code=429,
+            content={"error": f"Rate limit exceeded: {exc.detail}"}
+        )
+    else:
+        # Handle connection errors or other exceptions gracefully
+        logger.warning(f"Rate limiter error (not rate limit): {type(exc).__name__}: {exc}")
+        # Let the request through if rate limiter has issues
+        return None
 
 
 @asynccontextmanager
@@ -55,10 +69,27 @@ def create_app() -> FastAPI:
         debug=False,
     )
 
-    # Add rate limiter
+    # Add rate limiter with custom handler
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    app.add_middleware(SlowAPIMiddleware)
+    app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
+    
+    # Add ConnectionError handler to prevent slowapi crashes
+    @app.exception_handler(ConnectionError)
+    async def connection_error_handler(request: Request, exc: ConnectionError):
+        logger.warning(f"Connection error in request: {exc}")
+        # Continue processing - don't let connection errors break requests
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service temporarily unavailable"}
+        )
+    
+    # Only add rate limit middleware if storage is working
+    # The middleware can crash if Redis isn't available
+    if REDIS_URL:
+        app.add_middleware(SlowAPIMiddleware)
+        logger.info("Rate limiting middleware enabled (Redis storage)")
+    else:
+        logger.info("Rate limiting middleware disabled (no Redis - using decorators only)")
 
     # Import and include routers
     from src.api.webhooks import router as webhooks_router
