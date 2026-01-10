@@ -3,8 +3,8 @@
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
 
-IMPORTANT: In Docker, PYTHONPATH must include both subdirectories:
-  PYTHONPATH=/app:/app/research-agent:/app/factory
+CRITICAL: We must patch the app module BEFORE importing command handlers,
+because decorators register with the app at import time.
 """
 
 import argparse
@@ -33,24 +33,11 @@ RESEARCH_AGENT_PATH = os.path.join(BASE_DIR, "research-agent")
 FACTORY_PATH = os.path.join(BASE_DIR, "factory")
 
 
-def ensure_paths():
-    """Ensure both project paths are in sys.path.
-    
-    This is a fallback for local development - in Docker, PYTHONPATH handles this.
-    """
-    for path in [RESEARCH_AGENT_PATH, FACTORY_PATH]:
-        if path not in sys.path:
-            sys.path.insert(0, path)
-            logger.debug(f"Added to sys.path: {path}")
-
-
 def get_factory_settings():
     """Load settings from factory config."""
-    ensure_paths()
-    # Push factory to front of path for this import
-    if FACTORY_PATH in sys.path:
-        sys.path.remove(FACTORY_PATH)
-    sys.path.insert(0, FACTORY_PATH)
+    # Add factory to path
+    if FACTORY_PATH not in sys.path:
+        sys.path.insert(0, FACTORY_PATH)
     
     from src.config import settings
     return settings
@@ -61,47 +48,67 @@ def create_shared_app(settings):
     return App(token=settings.slack_bot_token)
 
 
-def patch_and_register_handlers(app, project_path, project_name):
-    """Patch a project's app module and register its handlers.
+def register_research_agent_handlers(app):
+    """Register Research Agent handlers by patching app before import.
     
-    Temporarily prioritizes the project path, then imports handlers.
+    IMPORTANT: We must patch src.slack.app BEFORE importing handlers,
+    because @app.command decorators execute at import time.
     """
-    ensure_paths()
+    # Add research-agent path first
+    if RESEARCH_AGENT_PATH in sys.path:
+        sys.path.remove(RESEARCH_AGENT_PATH)
+    sys.path.insert(0, RESEARCH_AGENT_PATH)
     
-    # Put this project's path first
-    if project_path in sys.path:
-        sys.path.remove(project_path)
-    sys.path.insert(0, project_path)
+    # Remove any cached imports from factory
+    modules_to_remove = [key for key in sys.modules.keys() 
+                         if key.startswith('src.')]
+    for mod in modules_to_remove:
+        del sys.modules[mod]
     
-    # Patch the app module
+    # Now import and patch the app module BEFORE importing handlers
     import src.slack.app as slack_app_module
     slack_app_module.app = app
     
-    # Import handlers (they register via decorators)
-    # Need to reload if already imported
-    import importlib
-    importlib.invalidate_caches()
+    # Now import handlers - decorators will use our patched app
+    from src.slack import commands  # noqa: F401
+    from src.slack import interactions  # noqa: F401
     
-    from src.slack import commands
-    from src.slack import interactions
+    logger.info("✓ Research Agent handlers registered")
+
+
+def register_factory_handlers(app):
+    """Register Factory handlers by patching app before import."""
+    # Add factory path first
+    if FACTORY_PATH in sys.path:
+        sys.path.remove(FACTORY_PATH)
+    sys.path.insert(0, FACTORY_PATH)
     
-    # Force reload to ensure decorators run with our app
-    importlib.reload(commands)
-    importlib.reload(interactions)
+    # Clear cached src.* modules from research-agent
+    modules_to_remove = [key for key in sys.modules.keys() 
+                         if key.startswith('src.')]
+    for mod in modules_to_remove:
+        del sys.modules[mod]
     
-    logger.info(f"✓ {project_name} handlers registered")
+    # Import and patch the app module BEFORE importing handlers
+    import src.slack.app as slack_app_module
+    slack_app_module.app = app
+    
+    # Now import handlers - decorators will use our patched app
+    from src.slack import commands  # noqa: F401
+    from src.slack import interactions  # noqa: F401
+    
+    logger.info("✓ Factory handlers registered")
 
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
-    # Ensure factory is in path
+    # Ensure factory path is set
     if FACTORY_PATH not in sys.path:
         sys.path.insert(0, FACTORY_PATH)
     
-    # Make sure factory is first for this import
-    if FACTORY_PATH in sys.path:
-        sys.path.remove(FACTORY_PATH)
-    sys.path.insert(0, FACTORY_PATH)
+    # Clear any stale module cache
+    if 'src.api.server' in sys.modules:
+        del sys.modules['src.api.server']
     
     from src.api.server import start_server
     
@@ -123,7 +130,6 @@ def main():
     logger.info("=" * 60)
     logger.info("Vineyard Bot - Unified Research Agent + Factory")
     logger.info("=" * 60)
-    logger.debug(f"sys.path: {sys.path[:5]}")
 
     try:
         # Get settings (uses factory's config)
@@ -138,8 +144,9 @@ def main():
         app = create_shared_app(settings)
 
         # Register handlers from both systems
-        patch_and_register_handlers(app, RESEARCH_AGENT_PATH, "Research Agent")
-        patch_and_register_handlers(app, FACTORY_PATH, "Factory")
+        # Order matters - research agent first, then factory
+        register_research_agent_handlers(app)
+        register_factory_handlers(app)
 
         if args.mode == "all":
             logger.info("Starting API server in background...")
