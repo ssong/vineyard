@@ -203,14 +203,11 @@ def run_factory(
             })
             save_state(state)
 
-            # Update Linear issue to show failed
+            # Update Linear issue to show failed (adds label and detailed comment)
             _update_linear_phase_status(
                 state, current_phase, "failed",
-                f"Phase failed: {str(e)[:500]}"
+                str(e)
             )
-
-            # Create Linear error issue (as sub-issue)
-            _create_linear_error(state, current_phase, str(e))
 
             # Send failure notification with resume option
             if channel_id:
@@ -506,19 +503,6 @@ def _notify_complete(channel_id: str, state: FactoryState):
         logger.error(f"Failed to send completion notification: {e}")
 
 
-def _create_linear_error(state: FactoryState, phase: Phase, error: str):
-    """Create a Linear issue for the error."""
-    try:
-        linear.create_error_issue(
-            project_id=state.handoff.linear_project_id,
-            phase=phase.value,
-            error_message=error,
-            execution_id=state.execution_id,
-        )
-    except Exception as e:
-        logger.error(f"Failed to create Linear error issue: {e}")
-
-
 def _update_linear_phase_status(
     state: FactoryState,
     phase: Phase,
@@ -549,6 +533,7 @@ def _update_linear_phase_status(
             team_id=state.linear_team_id,
             status=status,
             progress_message=message,
+            execution_id=state.execution_id if status == "failed" else None,
         )
 
     except Exception as e:

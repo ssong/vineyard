@@ -212,6 +212,7 @@ def ensure_labels(team_id: str, label_names: list[str]) -> dict[str, str]:
         "support": "#A855F7",       # Fuchsia
         "phase": "#6B7280",         # Gray
         "blocked": "#DC2626",       # Red
+        "failed": "#DC2626",        # Red
         "needs-review": "#FBBF24",  # Yellow
     }
 
@@ -858,6 +859,7 @@ def update_phase_issue(
     status: str,
     progress_message: Optional[str] = None,
     completed_tasks: Optional[list[str]] = None,
+    execution_id: Optional[str] = None,
 ) -> bool:
     """
     Update a phase issue with progress.
@@ -868,6 +870,7 @@ def update_phase_issue(
         status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked'
         progress_message: Optional message to add as comment
         completed_tasks: List of completed task descriptions (for updating checklist)
+        execution_id: Factory execution ID (for failed status comments)
 
     Returns:
         True if update successful
@@ -875,11 +878,12 @@ def update_phase_issue(
     success = True
 
     # Transition to appropriate state
+    # For failed: stay in_progress so the issue remains visible and actionable
     state_map = {
         "started": "in_progress",
         "in_progress": "in_progress",
         "completed": "done",
-        "failed": "canceled",
+        "failed": "in_progress",  # Keep visible, add failed label instead
         "blocked": "in_progress",  # Stay in progress but add blocked label
     }
 
@@ -891,19 +895,67 @@ def update_phase_issue(
     if status == "blocked" and progress_message:
         block_issue(phase_issue_id, team_id, progress_message)
 
-    # Add progress comment if provided
-    if progress_message and status != "blocked":
+    # Handle failed status - add failed label and detailed comment
+    if status == "failed":
+        # Add failed label
+        labels = ensure_labels(team_id, ["failed"])
+        if "failed" in labels:
+            _add_label_to_issue(phase_issue_id, labels["failed"])
+
+        # Add detailed error comment
+        error_comment = f"""## ❌ Phase Failed
+
+**Error:**
+```
+{progress_message[:2000] if progress_message else 'Unknown error'}
+```
+
+### Next Steps
+
+1. Review the error message above
+2. Check logs for more context
+3. Fix the underlying issue
+4. Comment "retry" on this issue or move it back to "Todo" to resume
+
+"""
+        if execution_id:
+            error_comment += f"**Execution ID:** `{execution_id}`\n\n"
+        error_comment += "---\n*This issue can be retried by commenting \"retry\" or moving to Todo*"
+        add_comment(phase_issue_id, error_comment)
+
+    # Add progress comment if provided (for non-blocked, non-failed statuses)
+    elif progress_message and status != "blocked":
         status_emoji = {
             "started": "🚀",
             "in_progress": "🔄",
             "completed": "✅",
-            "failed": "❌",
         }
         emoji = status_emoji.get(status, "📋")
         comment = f"{emoji} **{status.replace('_', ' ').title()}**\n\n{progress_message}"
         add_comment(phase_issue_id, comment)
 
     return success
+
+
+def _add_label_to_issue(issue_id: str, label_id: str) -> bool:
+    """Add a label to an issue."""
+    mutation = """
+    mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) {
+            success
+        }
+    }
+    """
+    variables = {
+        "id": issue_id,
+        "input": {"labelIds": [label_id]},
+    }
+    try:
+        data = _make_request(mutation, variables)
+        return data.get("issueUpdate", {}).get("success", False)
+    except Exception as e:
+        logger.warning(f"Failed to add label to issue: {e}")
+        return False
 
 
 def create_work_items(
