@@ -358,7 +358,7 @@ def _execute_phase(state: FactoryState, phase: Phase) -> dict:
 
         code_agent = CodeAgent()
         outputs["code"] = code_agent.run(state)
-        state.store_output("build", outputs)
+        state.store_output(Phase.BUILD, outputs)
 
         test_agent = TestAgent()
         outputs["test"] = test_agent.run(state)
@@ -377,7 +377,7 @@ def _execute_phase(state: FactoryState, phase: Phase) -> dict:
 
         marketing_agent = MarketingAgent()
         outputs["marketing"] = marketing_agent.run(state)
-        state.store_output("launch_prep", outputs)
+        state.store_output(Phase.LAUNCH_PREP, outputs)
 
         return outputs
 

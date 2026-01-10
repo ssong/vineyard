@@ -12,6 +12,7 @@ from src.models import (
     ForecastSummary,
     LaunchPreferences,
     OpportunitySummary,
+    PhaseStatus,
     ValidationSummary,
 )
 from src.orchestrator import create_factory_run, run_factory
@@ -125,7 +126,7 @@ def _run_factory_async(state, channel_id: str):
                 f"All phases finished successfully.\n"
                 f"Linear project: {result.handoff.linear_project_url}",
             )
-        elif result.phase_statuses.get(result.current_phase.value) == "awaiting_approval":
+        elif result.phase_statuses.get(result.current_phase.value) == PhaseStatus.AWAITING_APPROVAL:
             send_checkpoint_request(channel_id, result)
         else:
             # Failed

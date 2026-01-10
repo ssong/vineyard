@@ -155,12 +155,24 @@ class FactoryState:
     slack_channels: dict[str, str] = field(default_factory=dict)
 
     def update_phase_status(self, phase: Phase, status: PhaseStatus):
-        """Update status of a phase."""
+        """
+        Update status of a phase.
+
+        Args:
+            phase: Phase enum instance (not string like "build")
+            status: PhaseStatus enum instance (not string like "completed")
+        """
         self.phase_statuses[phase.value] = status
         self.last_updated_at = datetime.utcnow()
 
     def store_output(self, phase: Phase, output: Any):
-        """Store output from a phase."""
+        """
+        Store output from a phase.
+
+        Args:
+            phase: Phase enum instance (not string like "build")
+            output: Output data for the phase (dict or dataclass)
+        """
         self.phase_outputs[phase.value] = output
         self.last_updated_at = datetime.utcnow()
 
