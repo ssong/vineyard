@@ -121,15 +121,35 @@ docker run -d \
 |-----------|----------------|---------|
 | `./outputs` | `/app/outputs` | Research reports (PDFs) |
 | `./state` | `/app/state` | Factory execution state |
+| `./data` | `/root/.vineyard` | SQLite databases (research-agent, factory) |
 
 **Setting up volumes:**
 ```bash
 # Create directories with correct permissions
-mkdir -p outputs state
+mkdir -p outputs state data/research-agent data/factory
+chmod 700 data data/research-agent data/factory  # Secure DB directories
 chmod 755 outputs state
 
 # If permission denied errors occur:
-sudo chown -R 1000:1000 outputs state
+sudo chown -R 1000:1000 outputs state data
+```
+
+### Updated Docker Run Command
+
+```bash
+docker run -d \
+  --name vineyard \
+  --network vineyard-net \
+  --restart unless-stopped \
+  --env-file .env \
+  -e REDIS_URL=redis://vineyard-redis:6379 \
+  -e VINEYARD_DATA_DIR=/root/.vineyard/research-agent \
+  -e FACTORY_STATE_DIR=/root/.vineyard/factory \
+  -v $(pwd)/outputs:/app/outputs \
+  -v $(pwd)/state:/app/state \
+  -v $(pwd)/data:/root/.vineyard \
+  -p 8000:8000 \
+  vineyard
 ```
 
 ### Port Mapping

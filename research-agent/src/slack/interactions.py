@@ -6,22 +6,20 @@ import re
 from slack_bolt import Ack, Respond
 
 from src.linear.client import create_project_for_opportunity
+from src.persistence import save_report as _save_report, load_report as _load_report, mark_opportunity_selected
 from src.slack.app import app
 
 logger = logging.getLogger(__name__)
 
-# In-memory store for research reports (would be Redis/DB in production)
-_research_reports: dict = {}
-
 
 def store_report(report_id: str, report):
-    """Store a research report for later retrieval."""
-    _research_reports[report_id] = report
+    """Store a research report for later retrieval (SQLite-backed)."""
+    _save_report(report_id, report)
 
 
 def get_report(report_id: str):
-    """Retrieve a stored research report."""
-    return _research_reports.get(report_id)
+    """Retrieve a stored research report (SQLite-backed)."""
+    return _load_report(report_id)
 
 
 @app.action(re.compile(r"select_opportunity_\d+"))
@@ -66,6 +64,9 @@ def handle_opportunity_selection(ack: Ack, body: dict, respond: Respond):
     # Create Linear project
     try:
         project_url = create_project_for_opportunity(selected_opp)
+
+        # Mark opportunity as selected in database
+        mark_opportunity_selected(opportunity_id, project_url)
 
         # Update the original message
         respond(

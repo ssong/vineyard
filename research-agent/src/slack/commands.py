@@ -8,6 +8,7 @@ from datetime import datetime
 from slack_bolt import Ack, Respond
 
 from src.agents.orchestrator import run_research_pipeline
+from src.persistence import list_opportunities
 from src.reports.generator import generate_markdown_report
 from src.reports.pdf import generate_pdf
 from src.slack.app import app
@@ -24,16 +25,66 @@ def handle_vineyard_command(ack: Ack, respond: Respond, command: dict):
 
     if subcommand == "new":
         handle_new_research(respond, command)
+    elif subcommand == "list":
+        handle_list_opportunities(respond)
     elif subcommand == "help":
         respond(
             text="*Vineyard Commands*\n"
             "• `/vineyard new` - Start a new research cycle\n"
+            "• `/vineyard list` - Show recent opportunities\n"
             "• `/vineyard help` - Show this help message"
         )
     else:
         respond(
             text="Unknown command. Use `/vineyard help` to see available commands."
         )
+
+
+def handle_list_opportunities(respond: Respond):
+    """List recent opportunities."""
+    opportunities = list_opportunities(limit=10)
+
+    if not opportunities:
+        respond(
+            text="📭 No opportunities found yet.\n\nRun `/vineyard new` to discover opportunities."
+        )
+        return
+
+    # Build formatted list
+    lines = ["*📋 Recent Opportunities*\n"]
+    
+    for i, opp in enumerate(opportunities, 1):
+        status_emoji = "✅" if opp["status"] == "selected" else "⏳"
+        score = opp.get("score", 0)
+        name = opp.get("name", "Unknown")[:40]
+        
+        # Format created_at as relative time
+        created = opp.get("created_at", "")
+        if created:
+            try:
+                from datetime import datetime
+                created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                delta = datetime.utcnow() - created_dt.replace(tzinfo=None)
+                if delta.days > 0:
+                    time_ago = f"{delta.days}d ago"
+                elif delta.seconds > 3600:
+                    time_ago = f"{delta.seconds // 3600}h ago"
+                else:
+                    time_ago = f"{delta.seconds // 60}m ago"
+            except Exception:
+                time_ago = ""
+        else:
+            time_ago = ""
+
+        line = f"{status_emoji} *{name}* ({score}/100)"
+        if time_ago:
+            line += f" - _{time_ago}_"
+        if opp["status"] == "selected" and opp.get("project_url"):
+            line += f" <{opp['project_url']}|View>"
+        
+        lines.append(line)
+
+    respond(text="\n".join(lines))
 
 
 def handle_new_research(respond: Respond, command: dict):
