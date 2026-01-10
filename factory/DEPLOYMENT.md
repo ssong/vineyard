@@ -160,13 +160,13 @@ apt install nginx -y
 cat > /etc/nginx/sites-available/vineyard << 'EOF'
 server {
     listen 80;
-    server_name factory.yourdomain.com;
+    server_name factory.ssong.dev;
     return 301 https://$server_name$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name factory.yourdomain.com;
+    server_name factory.ssong.dev;
 
     ssl_certificate /etc/ssl/cloudflare/origin.pem;
     ssl_certificate_key /etc/ssl/cloudflare/origin.key;

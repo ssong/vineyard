@@ -7,6 +7,9 @@ State is automatically persisted after each phase update.
 import json
 import logging
 import os
+import re
+import stat
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,21 +21,91 @@ logger = logging.getLogger(__name__)
 # Storage backend: "file" or "redis"
 STORAGE_BACKEND = os.getenv("FACTORY_STORAGE_BACKEND", "file")
 
-# File storage path
-STATE_DIR = Path(os.getenv("FACTORY_STATE_DIR", "/tmp/vineyard-factory-state"))
+# File storage path - use a more secure default than /tmp
+# In production, set FACTORY_STATE_DIR to a dedicated directory with restricted permissions
+DEFAULT_STATE_DIR = os.path.expanduser("~/.vineyard-factory/state")
+STATE_DIR = Path(os.getenv("FACTORY_STATE_DIR", DEFAULT_STATE_DIR))
 
 # Redis connection (optional)
 REDIS_URL = os.getenv("REDIS_URL")
 
+# UUID pattern for execution IDs
+UUID_PATTERN = re.compile(
+    r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$',
+    re.IGNORECASE
+)
+
+
+def _is_valid_execution_id(execution_id: str) -> bool:
+    """
+    Validate that execution_id is a valid UUID format.
+
+    This prevents path traversal attacks by ensuring the ID
+    can only contain hexadecimal characters and hyphens.
+    """
+    if not execution_id or not isinstance(execution_id, str):
+        return False
+
+    if len(execution_id) != 36:
+        return False
+
+    if not UUID_PATTERN.match(execution_id):
+        return False
+
+    # Additional validation: try to parse as UUID
+    try:
+        uuid.UUID(execution_id)
+        return True
+    except (ValueError, TypeError):
+        return False
+
 
 def _ensure_state_dir():
-    """Ensure state directory exists."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    """
+    Ensure state directory exists with secure permissions.
+
+    Creates the directory with mode 0700 (owner-only access).
+    """
+    if not STATE_DIR.exists():
+        STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+        logger.info(f"Created state directory: {STATE_DIR}")
+    else:
+        # Verify the directory has secure permissions
+        current_mode = STATE_DIR.stat().st_mode
+        if current_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            logger.warning(
+                f"State directory {STATE_DIR} has insecure permissions. "
+                f"Consider running: chmod 700 {STATE_DIR}"
+            )
 
 
-def _state_file_path(execution_id: str) -> Path:
-    """Get path to state file."""
-    return STATE_DIR / f"{execution_id}.json"
+def _state_file_path(execution_id: str) -> Optional[Path]:
+    """
+    Get path to state file with path traversal protection.
+
+    Returns None if execution_id is invalid.
+    """
+    # Validate execution ID format
+    if not _is_valid_execution_id(execution_id):
+        logger.warning(f"Invalid execution ID format rejected: {execution_id[:50] if execution_id else 'None'}...")
+        return None
+
+    # Construct path
+    filepath = STATE_DIR / f"{execution_id}.json"
+
+    # Verify the resolved path is within STATE_DIR (defense in depth)
+    try:
+        resolved = filepath.resolve()
+        state_dir_resolved = STATE_DIR.resolve()
+
+        if not str(resolved).startswith(str(state_dir_resolved)):
+            logger.error(f"Path traversal attempt detected: {execution_id[:50]}...")
+            return None
+    except (OSError, ValueError) as e:
+        logger.error(f"Path resolution error: {e}")
+        return None
+
+    return filepath
 
 
 def _serialize_state(state: FactoryState) -> dict:
@@ -165,12 +238,18 @@ def _save_state_file(state: FactoryState) -> None:
     """Save state to JSON file."""
     _ensure_state_dir()
     filepath = _state_file_path(state.execution_id)
-    
+
+    if filepath is None:
+        raise ValueError(f"Invalid execution ID: {state.execution_id[:20] if state.execution_id else 'None'}...")
+
     try:
         data = _serialize_state(state)
-        with open(filepath, "w") as f:
+        # Write atomically using a temp file
+        temp_path = filepath.with_suffix(".tmp")
+        with open(temp_path, "w") as f:
             json.dump(data, f, indent=2, default=str)
-        logger.debug(f"Saved state to {filepath}")
+        temp_path.replace(filepath)
+        logger.debug(f"Saved state to {filepath.name}")
     except Exception as e:
         logger.error(f"Failed to save state to file: {e}")
         raise
@@ -207,14 +286,20 @@ def load_state(execution_id: str) -> Optional[FactoryState]:
 def _load_state_file(execution_id: str) -> Optional[FactoryState]:
     """Load state from JSON file."""
     filepath = _state_file_path(execution_id)
-    
+
+    if filepath is None:
+        return None
+
     if not filepath.exists():
         return None
-    
+
     try:
         with open(filepath, "r") as f:
             data = json.load(f)
         return _deserialize_state(data)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in state file: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to load state from file: {e}")
         return None
@@ -267,6 +352,11 @@ def list_states(status_filter: Optional[str] = None) -> list[dict]:
 
 def delete_state(execution_id: str) -> bool:
     """Delete a factory state."""
+    # Validate execution ID first
+    if not _is_valid_execution_id(execution_id):
+        logger.warning(f"Attempted to delete invalid execution ID: {execution_id[:20] if execution_id else 'None'}...")
+        return False
+
     if STORAGE_BACKEND == "redis" and REDIS_URL:
         try:
             import redis
@@ -274,9 +364,13 @@ def delete_state(execution_id: str) -> bool:
             r.delete(f"factory:state:{execution_id}")
         except Exception:
             pass
-    
+
     filepath = _state_file_path(execution_id)
+    if filepath is None:
+        return False
+
     if filepath.exists():
         filepath.unlink()
+        logger.info(f"Deleted state: {execution_id[:8]}...")
         return True
     return False

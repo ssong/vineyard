@@ -4,10 +4,13 @@ import hashlib
 import hmac
 import logging
 import re
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request, BackgroundTasks
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.config import settings
 from src.orchestrator.persistence import load_state, list_states
@@ -18,6 +21,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Rate limiter for webhook endpoints
+limiter = Limiter(key_func=get_remote_address)
+
+# Security constants
+MAX_COMMENT_LENGTH = 10000
+MAX_DESCRIPTION_LENGTH = 50000
+ALLOWED_WEBHOOK_ACTIONS = {"create", "update", "remove"}
+ALLOWED_WEBHOOK_TYPES = {"Issue", "Comment", "Project"}
+
 
 # =============================================================================
 # Webhook Payload Models
@@ -25,39 +37,53 @@ router = APIRouter()
 
 class LinearActor(BaseModel):
     """Linear user who triggered the action."""
-    id: str
-    name: Optional[str] = None
-    email: Optional[str] = None
+    id: str = Field(..., max_length=100)
+    name: Optional[str] = Field(None, max_length=200)
+    email: Optional[str] = Field(None, max_length=320)
 
 
 class LinearIssueData(BaseModel):
     """Issue data from Linear webhook."""
-    id: str
-    identifier: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
+    id: str = Field(..., max_length=100)
+    identifier: Optional[str] = Field(None, max_length=50)
+    title: Optional[str] = Field(None, max_length=500)
+    description: Optional[str] = Field(None, max_length=MAX_DESCRIPTION_LENGTH)
     state: Optional[dict] = None
     project: Optional[dict] = None
     labels: Optional[list[dict]] = None
-    priority: Optional[int] = None
+    priority: Optional[int] = Field(None, ge=0, le=4)
 
 
 class LinearCommentData(BaseModel):
     """Comment data from Linear webhook."""
-    id: str
-    body: str
+    id: str = Field(..., max_length=100)
+    body: str = Field(..., max_length=MAX_COMMENT_LENGTH)
     issue: Optional[dict] = None
     user: Optional[dict] = None
 
 
 class LinearWebhookPayload(BaseModel):
     """Linear webhook payload structure."""
-    action: str  # create, update, remove
-    type: str  # Issue, Comment, Project, etc.
+    action: str = Field(..., max_length=20)
+    type: str = Field(..., max_length=50)
     data: dict
-    url: Optional[str] = None
-    createdAt: Optional[str] = None
-    organizationId: Optional[str] = None
+    url: Optional[str] = Field(None, max_length=500)
+    createdAt: Optional[str] = Field(None, max_length=50)
+    organizationId: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        if v not in ALLOWED_WEBHOOK_ACTIONS:
+            raise ValueError(f"Invalid action: {v}")
+        return v
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        if v not in ALLOWED_WEBHOOK_TYPES:
+            raise ValueError(f"Invalid type: {v}")
+        return v
 
 
 # =============================================================================
@@ -121,10 +147,75 @@ FAILED_STATES = [
 EXECUTION_ID_PATTERN = re.compile(r"Execution ID:\s*`([a-f0-9-]+)`", re.IGNORECASE)
 
 
+def is_valid_uuid(value: str) -> bool:
+    """Check if a string is a valid UUID."""
+    try:
+        uuid.UUID(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def extract_execution_id(text: str) -> Optional[str]:
-    """Extract execution ID from issue description or comment."""
+    """
+    Extract and validate execution ID from issue description or comment.
+
+    Returns None if not found or invalid.
+    """
+    if not text or len(text) > MAX_DESCRIPTION_LENGTH:
+        return None
+
     match = EXECUTION_ID_PATTERN.search(text)
-    return match.group(1) if match else None
+    if not match:
+        return None
+
+    candidate = match.group(1)
+
+    # Validate it's a proper UUID format
+    if not is_valid_uuid(candidate):
+        logger.warning(f"Invalid execution ID format: {candidate[:50]}")
+        return None
+
+    return candidate
+
+
+def validate_execution_id(execution_id: str) -> bool:
+    """
+    Validate that an execution ID exists in our state store.
+
+    This prevents injection of arbitrary execution IDs.
+    """
+    if not is_valid_uuid(execution_id):
+        return False
+
+    # Check if state exists for this execution
+    state = load_state(execution_id)
+    return state is not None
+
+
+def sanitize_error_message(error: Exception, max_length: int = 100) -> str:
+    """
+    Sanitize error message for external display.
+
+    Removes potentially sensitive information like paths, keys, etc.
+    """
+    message = str(error)
+
+    # Remove file paths
+    message = re.sub(r'/[^\s]+/', '[path]/', message)
+
+    # Remove anything that looks like an API key or token
+    message = re.sub(r'(api[_-]?key|token|secret|password|auth)[=:]\s*\S+', r'\1=[REDACTED]', message, flags=re.IGNORECASE)
+
+    # Remove stack trace indicators
+    message = re.sub(r'File "[^"]+", line \d+', '[internal]', message)
+
+    # Truncate safely at word boundary
+    if len(message) > max_length:
+        truncated = message[:max_length].rsplit(' ', 1)[0]
+        message = truncated + "..."
+
+    return message
 
 
 def should_retry(comment_body: str) -> bool:
@@ -168,18 +259,28 @@ async def handle_retry_request(
 
     This runs as a background task after the webhook returns.
     """
-    logger.info(f"Processing retry request on {issue_identifier} from {commenter_name}")
+    # Sanitize commenter name for logging
+    safe_commenter = commenter_name[:50] if commenter_name else "Unknown"
+    logger.info(f"Processing retry request on {issue_identifier} from {safe_commenter}")
 
     # Find the execution associated with this issue
     execution_id = find_execution_for_issue(issue_id)
 
     if not execution_id:
         logger.warning(f"No factory execution found for issue {issue_identifier}")
-        # Add comment to issue explaining we couldn't find the execution
         linear.add_comment(
             issue_id,
-            f"Could not find factory execution for this issue. "
-            f"Please use `/vineyard resume <execution-id>` in Slack instead."
+            "Could not find factory execution for this issue. "
+            "Please use `/vineyard resume <execution-id>` in Slack instead."
+        )
+        return
+
+    # Validate execution ID exists (defense in depth)
+    if not validate_execution_id(execution_id):
+        logger.error(f"Invalid or non-existent execution ID: {execution_id}")
+        linear.add_comment(
+            issue_id,
+            "Factory execution not found or no longer exists."
         )
         return
 
@@ -189,10 +290,11 @@ async def handle_retry_request(
         logger.error(f"Could not load state for execution {execution_id}")
         return
 
-    # Add acknowledgment comment
+    # Add acknowledgment comment (don't include full execution ID in public comment)
+    short_id = execution_id[:8]
     linear.add_comment(
         issue_id,
-        f"Retry requested by {commenter_name}. Resuming factory execution `{execution_id}`..."
+        f"Retry requested by {safe_commenter}. Resuming factory execution `{short_id}...`"
     )
 
     # Resume the factory
@@ -201,21 +303,22 @@ async def handle_retry_request(
 
         if updated_state:
             status = updated_state.phase_statuses.get(updated_state.current_phase.value)
+            phase_name = updated_state.current_phase.value.replace("_", " ").title()
             linear.add_comment(
                 issue_id,
-                f"Factory resumed. Current phase: **{updated_state.current_phase.value}** ({status.value if status else 'unknown'})"
+                f"Factory resumed. Current phase: **{phase_name}** ({status.value if status else 'unknown'})"
             )
         else:
             linear.add_comment(
                 issue_id,
-                "Failed to resume factory. Please check logs or try again via Slack."
+                "Failed to resume factory. Please check with administrator or try again via Slack."
             )
 
     except Exception as e:
-        logger.exception(f"Error resuming factory: {e}")
+        logger.exception("Error resuming factory")
         linear.add_comment(
             issue_id,
-            f"Error resuming factory: {str(e)[:200]}"
+            f"Error resuming factory: {sanitize_error_message(e)}"
         )
 
 
@@ -224,6 +327,7 @@ async def handle_retry_request(
 # =============================================================================
 
 @router.post("/linear")
+@limiter.limit("30/minute")  # Stricter limit for webhook endpoint
 async def linear_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
@@ -234,24 +338,42 @@ async def linear_webhook(
 
     Supported events:
     - Comment.create: Check for retry keywords to resume failed executions
-    - Issue.update: React to status changes (future)
+    - Issue.update: React to status changes
+
+    Security:
+    - Requires LINEAR_WEBHOOK_SECRET to be configured
+    - Validates HMAC-SHA256 signature on all requests
+    - Validates payload structure and content lengths
+    - Rate limited to 30 requests/minute per IP
     """
     # Get raw body for signature verification
     body = await request.body()
 
-    # Verify signature if webhook secret is configured
-    if settings.linear_webhook_secret:
-        if not verify_linear_signature(body, linear_signature, settings.linear_webhook_secret):
-            logger.warning("Invalid Linear webhook signature")
-            raise HTTPException(status_code=401, detail="Invalid signature")
-    else:
-        logger.warning("LINEAR_WEBHOOK_SECRET not configured - skipping signature verification")
+    # Enforce maximum payload size (1MB)
+    if len(body) > 1_000_000:
+        logger.warning("Webhook payload too large")
+        raise HTTPException(status_code=413, detail="Payload too large")
 
-    # Parse payload
+    # SECURITY: Signature verification is MANDATORY
+    if not settings.linear_webhook_secret:
+        logger.error("LINEAR_WEBHOOK_SECRET not configured - rejecting webhook")
+        raise HTTPException(
+            status_code=503,
+            detail="Webhook endpoint not configured"
+        )
+
+    if not verify_linear_signature(body, linear_signature, settings.linear_webhook_secret):
+        logger.warning("Invalid Linear webhook signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Parse and validate payload
     try:
         payload = LinearWebhookPayload.model_validate_json(body)
+    except ValueError as e:
+        logger.warning(f"Invalid webhook payload: {sanitize_error_message(e)}")
+        raise HTTPException(status_code=400, detail="Invalid payload")
     except Exception as e:
-        logger.error(f"Failed to parse Linear webhook payload: {e}")
+        logger.error(f"Failed to parse Linear webhook payload: {sanitize_error_message(e)}")
         raise HTTPException(status_code=400, detail="Invalid payload")
 
     logger.info(f"Received Linear webhook: {payload.type}.{payload.action}")
@@ -399,15 +521,25 @@ async def handle_state_change_retry(
     """
     Handle automatic retry triggered by state change.
     """
+    # Validate execution ID before proceeding
+    if not validate_execution_id(execution_id):
+        logger.error(f"Invalid execution ID in state change retry: {execution_id[:20]}...")
+        return
+
+    short_id = execution_id[:8]
     logger.info(
-        f"Auto-retrying execution {execution_id} due to state change on {issue_identifier}"
+        f"Auto-retrying execution {short_id}... due to state change on {issue_identifier}"
     )
+
+    # Sanitize state names for display
+    safe_prev = previous_state[:30] if previous_state else "unknown"
+    safe_curr = current_state[:30] if current_state else "unknown"
 
     # Add comment explaining the auto-retry
     linear.add_comment(
         issue_id,
-        f"Issue moved from **{previous_state}** to **{current_state}**. "
-        f"Automatically resuming factory execution `{execution_id}`..."
+        f"Issue moved from **{safe_prev}** to **{safe_curr}**. "
+        f"Automatically resuming factory execution `{short_id}...`"
     )
 
     try:
@@ -415,22 +547,23 @@ async def handle_state_change_retry(
 
         if updated_state:
             status = updated_state.phase_statuses.get(updated_state.current_phase.value)
+            phase_name = updated_state.current_phase.value.replace("_", " ").title()
             linear.add_comment(
                 issue_id,
-                f"Factory resumed. Current phase: **{updated_state.current_phase.value}** "
+                f"Factory resumed. Current phase: **{phase_name}** "
                 f"({status.value if status else 'unknown'})"
             )
         else:
             linear.add_comment(
                 issue_id,
-                "Failed to resume factory. Please check logs or retry manually via Slack."
+                "Failed to resume factory. Please check with administrator or retry via Slack."
             )
 
     except Exception as e:
-        logger.exception(f"Error auto-retrying factory: {e}")
+        logger.exception("Error auto-retrying factory")
         linear.add_comment(
             issue_id,
-            f"Error resuming factory: {str(e)[:200]}"
+            f"Error resuming factory: {sanitize_error_message(e)}"
         )
 
 
