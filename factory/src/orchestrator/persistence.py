@@ -108,15 +108,37 @@ def _state_file_path(execution_id: str) -> Optional[Path]:
     return filepath
 
 
+def _serialize_phase_outputs(outputs: dict) -> dict:
+    """Serialize phase outputs, converting Pydantic models and dataclasses to dicts."""
+    from dataclasses import asdict, is_dataclass
+
+    def _convert(value):
+        """Convert a single value to JSON-serializable form."""
+        if is_dataclass(value) and not isinstance(value, type):
+            return asdict(value)
+        elif hasattr(value, "model_dump"):
+            return value.model_dump()
+        elif hasattr(value, "dict"):
+            return value.dict()
+        elif isinstance(value, dict):
+            return {k: _convert(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [_convert(v) for v in value]
+        else:
+            return value
+
+    return {key: _convert(value) for key, value in outputs.items()}
+
+
 def _serialize_state(state: FactoryState) -> dict:
     """Serialize FactoryState to JSON-compatible dict."""
     return {
         "execution_id": state.execution_id,
         "handoff": _serialize_handoff(state.handoff),
         "current_phase": state.current_phase.value,
-        "phase_statuses": {k: v.value if isinstance(v, PhaseStatus) else v 
+        "phase_statuses": {k: v.value if isinstance(v, PhaseStatus) else v
                           for k, v in state.phase_statuses.items()},
-        "phase_outputs": state.phase_outputs,  # Assumes outputs are JSON-serializable
+        "phase_outputs": _serialize_phase_outputs(state.phase_outputs),
         "checkpoints_cleared": state.checkpoints_cleared,
         "linear_issues": state.linear_issues,
         "linear_phase_issues": state.linear_phase_issues,

@@ -586,58 +586,73 @@ All phases have completed successfully.
         logger.warning(f"Failed to complete factory root issue: {e}")
 
 
-def _get_phase_summary(phase: Phase, output: dict) -> str:
+def _get_phase_summary(phase: Phase, output) -> str:
     """Generate a summary of phase output for Linear comment."""
+    from dataclasses import asdict, is_dataclass
+
     if not output:
+        return "Phase completed successfully."
+
+    # Convert dataclasses, Pydantic models to dict for uniform handling
+    if is_dataclass(output) and not isinstance(output, type):
+        output = asdict(output)
+    elif hasattr(output, "model_dump"):
+        output = output.model_dump()
+    elif hasattr(output, "dict"):
+        output = output.dict()
+    elif not isinstance(output, dict):
         return "Phase completed successfully."
 
     summary_parts = []
 
     if phase == Phase.RESEARCH_ENRICHMENT:
         summary_parts.append("Research enrichment completed:")
-        if "enriched_data" in output:
+        if output.get("enriched_data"):
             summary_parts.append("- Market data enriched")
-        if "competitor_analysis" in output:
+        if output.get("competitor_analysis"):
             summary_parts.append("- Competitor analysis updated")
 
     elif phase == Phase.DESIGN:
         summary_parts.append("Design phase completed:")
-        if "prd" in output:
+        if output.get("prd"):
             summary_parts.append("- PRD generated")
-        if "user_flows" in output:
+        if output.get("user_flows"):
             summary_parts.append("- User flows created")
-        if "features" in output:
-            count = len(output.get("features", []))
-            summary_parts.append(f"- {count} features specified")
+        features = output.get("features", [])
+        if features:
+            summary_parts.append(f"- {len(features)} features specified")
 
     elif phase == Phase.SPEC:
         summary_parts.append("Technical specification completed:")
-        if "endpoints" in output:
-            count = len(output.get("endpoints", []))
-            summary_parts.append(f"- {count} API endpoints designed")
-        if "database" in output:
-            tables = output.get("database", {}).get("tables", [])
+        endpoints = output.get("endpoints", [])
+        if endpoints:
+            summary_parts.append(f"- {len(endpoints)} API endpoints designed")
+        database = output.get("database", {})
+        if database:
+            tables = database.get("tables", []) if isinstance(database, dict) else []
             summary_parts.append(f"- {len(tables)} database tables")
-        if "tasks" in output:
-            count = len(output.get("tasks", []))
-            summary_parts.append(f"- {count} engineering tasks")
+        tasks = output.get("tasks", [])
+        if tasks:
+            summary_parts.append(f"- {len(tasks)} engineering tasks")
 
     elif phase == Phase.BUILD:
         summary_parts.append("Build phase completed:")
-        if "code" in output:
-            files = output.get("code", {}).get("files_generated", [])
+        code = output.get("code", {})
+        if code:
+            files = code.get("files_generated", []) if isinstance(code, dict) else []
             summary_parts.append(f"- {len(files)} code files generated")
-        if "test" in output:
-            tests = output.get("test", {}).get("test_files", [])
+        test = output.get("test", {})
+        if test:
+            tests = test.get("test_files", []) if isinstance(test, dict) else []
             summary_parts.append(f"- {len(tests)} test files created")
-        if "security" in output:
+        if output.get("security"):
             summary_parts.append("- Security review complete")
-        if "devops" in output:
+        if output.get("devops"):
             summary_parts.append("- DevOps configuration ready")
 
     elif phase == Phase.LAUNCH_PREP:
         summary_parts.append("Launch preparation completed:")
-        if "marketing" in output:
+        if output.get("marketing"):
             summary_parts.append("- Marketing content ready")
 
     elif phase == Phase.LAUNCH:
@@ -646,9 +661,9 @@ def _get_phase_summary(phase: Phase, output: dict) -> str:
 
     elif phase == Phase.GROWTH:
         summary_parts.append("Growth setup completed:")
-        if "growth" in output:
+        if output.get("growth"):
             summary_parts.append("- Growth experiments configured")
-        if "support" in output:
+        if output.get("support"):
             summary_parts.append("- Support documentation ready")
 
     return "\n".join(summary_parts) if summary_parts else "Phase completed successfully."
