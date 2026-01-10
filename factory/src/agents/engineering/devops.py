@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import DEVOPS_AGENT_PROMPT
 from src.models import FactoryState, GeneratedFile
-from src.tools import github, linear, llm
+from src.tools import github, llm
 
 
 class DevOpsAgent(BaseAgent):
@@ -47,14 +47,12 @@ class DevOpsAgent(BaseAgent):
         # Push to GitHub
         self._push_to_github(opp, all_files)
 
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "infrastructure_files": all_files,
             "hosting": prefs.hosting_preference,
             "database": prefs.database_preference,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -327,31 +325,3 @@ Include:
         except Exception as e:
             self.logger.error(f"Failed to push to GitHub: {e}")
 
-    def _create_linear_issues(self, state: FactoryState) -> list[str]:
-        """Create Linear issues for infrastructure."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[DevOps] Infrastructure Setup Complete",
-                    "description": "Generated Dockerfile, CI/CD, and deployment configs.",
-                },
-                {
-                    "title": "[DevOps] Configure Production Secrets",
-                    "description": "Add production environment variables to hosting platform.",
-                    "labels": ["devops", "manual"],
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

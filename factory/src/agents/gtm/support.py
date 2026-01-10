@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import SUPPORT_AGENT_PROMPT
 from src.models import FactoryState
-from src.tools import linear, llm
+from src.tools import llm
 
 
 class SupportAgent(BaseAgent):
@@ -34,16 +34,13 @@ class SupportAgent(BaseAgent):
 
         # Generate response templates
         response_templates = self._generate_response_templates(opp)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "faq": faq,
             "help_articles": help_articles,
             "ticket_categories": ticket_categories,
             "response_templates": response_templates,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -191,38 +188,3 @@ Use placeholders like {{customer_name}}, {{ticket_id}}.
         except Exception as e:
             self.logger.error(f"Failed to generate templates: {e}")
             return {}
-
-    def _create_linear_issues(self, state: FactoryState) -> list[str]:
-        """Create Linear issues for support setup."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Support] FAQ Content Generated",
-                    "description": "FAQ content ready for help center.",
-                    "labels": ["support"],
-                },
-                {
-                    "title": "[Support] Help Articles Drafted",
-                    "description": "Help center articles outlined and ready for review.",
-                    "labels": ["support"],
-                },
-                {
-                    "title": "[Support] Ticket System Setup",
-                    "description": "Configure ticket categories and SLAs.",
-                    "labels": ["support", "manual"],
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

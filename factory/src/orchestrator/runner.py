@@ -91,10 +91,14 @@ def create_factory_run(handoff: FactoryHandoff) -> FactoryState:
 
 def _initialize_linear_tracking(state: FactoryState) -> dict[str, dict]:
     """
-    Create upfront Linear issues for all factory phases.
+    Create upfront Linear issues for all factory phases with task sub-issues.
+
+    Creates:
+    1. Phase issues for each factory phase
+    2. Task sub-issues under each phase with detailed approaches for review
 
     Returns:
-        Dict mapping phase names to their issue info
+        Dict mapping phase names to their issue info including task IDs
     """
     if not state.handoff.linear_project_id:
         logger.warning("No Linear project ID in handoff, skipping issue creation")
@@ -117,7 +121,79 @@ def _initialize_linear_tracking(state: FactoryState) -> dict[str, dict]:
         execution_id=state.execution_id,
     )
 
+    # Create task sub-issues for each phase
+    for phase_name, phase_info in phase_issues.items():
+        if phase_name == "root":
+            continue
+        
+        phase_id = phase_info.get("id")
+        if not phase_id:
+            continue
+        
+        task_issues = _create_phase_tasks(
+            state=state,
+            phase_name=phase_name,
+            phase_issue_id=phase_id,
+        )
+        
+        # Store task IDs in the phase info
+        phase_issues[phase_name]["tasks"] = task_issues
+
     return phase_issues
+
+
+def _create_phase_tasks(
+    state: FactoryState,
+    phase_name: str,
+    phase_issue_id: str,
+) -> dict[str, dict]:
+    """
+    Create task sub-issues for a phase with detailed approaches.
+
+    Args:
+        state: Factory state with Linear tracking info
+        phase_name: Name of the phase
+        phase_issue_id: Parent issue ID
+
+    Returns:
+        Dict mapping task keys to their issue info (id, identifier, url)
+    """
+    from src.config.task_config import get_phase_tasks
+
+    tasks = get_phase_tasks(phase_name)
+    if not tasks:
+        return {}
+
+    task_issues = {}
+    label = linear.PHASE_ISSUE_CONFIG.get(phase_name, {}).get("label", "phase")
+
+    for task in tasks:
+        try:
+            issue = linear.create_task_with_approach(
+                project_id=state.handoff.linear_project_id,
+                team_id=state.linear_team_id,
+                parent_id=phase_issue_id,
+                title=task["title"],
+                objective=task["objective"],
+                approach=task["approach"],
+                inputs=task["inputs"],
+                expected_output=task["expected_output"],
+                labels=[label],
+                assignee_name="vineyard",
+            )
+            
+            if issue:
+                task_issues[task["key"]] = {
+                    "id": issue.get("id"),
+                    "identifier": issue.get("identifier"),
+                    "url": issue.get("url"),
+                }
+                logger.debug(f"Created task {task['key']}: {issue.get('identifier')}")
+        except Exception as e:
+            logger.warning(f"Failed to create task {task['key']}: {e}")
+
+    logger.info(f"Created {len(task_issues)} tasks for phase {phase_name}")
+    return task_issues
 
 
 def run_factory(
@@ -152,10 +228,12 @@ def run_factory(
             save_state(state)
             logger.info(f"Phase {current_phase.value} awaiting approval")
 
-            # Update Linear issue to show blocked/awaiting state
+            # Update Linear issue to show awaiting review, assign to operator
             _update_linear_phase_status(
-                state, current_phase, "blocked",
-                "Awaiting human approval before proceeding"
+                state, current_phase, "awaiting_review",
+                f"Phase {current_phase.value.replace('_', ' ')} completed, awaiting review before proceeding.",
+                assign_to="sang",  # Assign to operator for review
+                mention_user="sang",  # Tag operator in comment
             )
 
             # Send Slack notification
@@ -203,10 +281,11 @@ def run_factory(
             })
             save_state(state)
 
-            # Update Linear issue to show failed (adds label and detailed comment)
+            # Update Linear issue to show failed (adds label, tags operator)
             _update_linear_phase_status(
                 state, current_phase, "failed",
-                str(e)
+                str(e),
+                mention_user="sang",  # Tag operator for failure review
             )
 
             # Send failure notification with resume option
@@ -508,6 +587,9 @@ def _update_linear_phase_status(
     phase: Phase,
     status: str,
     message: Optional[str] = None,
+    assign_to: Optional[str] = None,
+    mention_user: Optional[str] = None,
+    output_links: Optional[list[str]] = None,
 ):
     """
     Update the Linear issue for a phase with current status.
@@ -515,8 +597,11 @@ def _update_linear_phase_status(
     Args:
         state: Factory state with phase issues
         phase: Current phase
-        status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked'
+        status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked', 'awaiting_review'
         message: Optional progress message
+        assign_to: Optional user name to assign the issue to (for reviews)
+        mention_user: Optional user name to @ mention in comment (for failures/reviews)
+        output_links: Optional list of output artifact URLs to link
     """
     try:
         phase_info = state.linear_phase_issues.get(phase.value)
@@ -534,6 +619,9 @@ def _update_linear_phase_status(
             status=status,
             progress_message=message,
             execution_id=state.execution_id if status == "failed" else None,
+            assign_to=assign_to,
+            mention_user=mention_user,
+            output_links=output_links,
         )
 
     except Exception as e:

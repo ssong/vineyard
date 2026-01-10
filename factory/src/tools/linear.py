@@ -16,6 +16,193 @@ LINEAR_API_URL = "https://api.linear.app/graphql"
 # Cache for workflow states and labels (cleared on module reload)
 _workflow_states_cache: dict[str, dict[str, str]] = {}
 _labels_cache: dict[str, dict[str, str]] = {}
+_users_cache: dict[str, str] = {}  # name (lowercase) -> user ID
+
+
+# =============================================================================
+# User Management
+# =============================================================================
+
+def get_users() -> dict[str, str]:
+    """
+    Get all users in the workspace.
+    
+    Returns:
+        Dict mapping display names (lowercase) to user IDs.
+    """
+    global _users_cache
+    if _users_cache:
+        return _users_cache
+    
+    query = """
+    query {
+        users {
+            nodes {
+                id
+                name
+                displayName
+                email
+                active
+            }
+        }
+    }
+    """
+    
+    data = _make_request(query)
+    users = data.get("users", {}).get("nodes", [])
+    
+    for user in users:
+        if not user.get("active", True):
+            continue
+        # Map by display name, name, and email prefix
+        display_name = user.get("displayName", "").lower()
+        name = user.get("name", "").lower()
+        email = user.get("email", "")
+        user_id = user.get("id", "")
+        
+        if display_name:
+            _users_cache[display_name] = user_id
+        if name and name != display_name:
+            _users_cache[name] = user_id
+        if email:
+            email_prefix = email.split("@")[0].lower()
+            if email_prefix not in _users_cache:
+                _users_cache[email_prefix] = user_id
+    
+    logger.info(f"Cached {len(_users_cache)} user mappings")
+    return _users_cache
+
+
+def get_user_by_name(name: str) -> Optional[str]:
+    """
+    Get user ID by display name (case-insensitive).
+    
+    Args:
+        name: User's display name, name, or email prefix
+        
+    Returns:
+        User ID if found, None otherwise
+    """
+    users = get_users()
+    return users.get(name.lower())
+
+
+def assign_issue(issue_id: str, assignee_id: str) -> bool:
+    """
+    Assign an issue to a user.
+    
+    Args:
+        issue_id: The issue ID
+        assignee_id: The user ID to assign to
+        
+    Returns:
+        True if successful
+    """
+    mutation = """
+    mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) {
+            success
+        }
+    }
+    """
+    
+    variables = {
+        "id": issue_id,
+        "input": {"assigneeId": assignee_id},
+    }
+    
+    try:
+        data = _make_request(mutation, variables)
+        success = data.get("issueUpdate", {}).get("success", False)
+        if success:
+            logger.debug(f"Assigned issue {issue_id} to user {assignee_id}")
+        return success
+    except Exception as e:
+        logger.warning(f"Failed to assign issue: {e}")
+        return False
+
+
+def assign_issue_by_name(issue_id: str, assignee_name: str) -> bool:
+    """
+    Assign an issue to a user by name.
+    
+    Args:
+        issue_id: The issue ID
+        assignee_name: The user's display name
+        
+    Returns:
+        True if successful
+    """
+    user_id = get_user_by_name(assignee_name)
+    if not user_id:
+        logger.warning(f"User '{assignee_name}' not found")
+        return False
+    return assign_issue(issue_id, user_id)
+
+
+def get_issue_comments(issue_id: str) -> list[dict]:
+    """
+    Get comments on an issue, ordered by creation time (newest first).
+    
+    Args:
+        issue_id: The issue ID
+        
+    Returns:
+        List of comment dicts with id, body, user info, and createdAt
+    """
+    query = """
+    query GetIssueComments($issueId: String!) {
+        issue(id: $issueId) {
+            comments {
+                nodes {
+                    id
+                    body
+                    createdAt
+                    user {
+                        id
+                        name
+                        displayName
+                    }
+                }
+            }
+        }
+    }
+    """
+    
+    try:
+        data = _make_request(query, {"issueId": issue_id})
+        comments = data.get("issue", {}).get("comments", {}).get("nodes", [])
+        # Sort by createdAt descending (newest first)
+        return sorted(comments, key=lambda c: c.get("createdAt", ""), reverse=True)
+    except Exception as e:
+        logger.warning(f"Failed to get issue comments: {e}")
+        return []
+
+
+def mention_user_in_comment(issue_id: str, user_name: str, body: str) -> bool:
+    """
+    Add a comment that mentions a user.
+    
+    Linear uses @[user_id] format for mentions in comments.
+    
+    Args:
+        issue_id: The issue ID
+        user_name: The user's display name to mention
+        body: Comment body (user mention will be prepended)
+        
+    Returns:
+        True if successful
+    """
+    user_id = get_user_by_name(user_name)
+    if user_id:
+        # Linear mention format
+        mention_body = f"@[{user_id}] {body}"
+    else:
+        # Fallback to plain text mention
+        logger.warning(f"User '{user_name}' not found, using plain text mention")
+        mention_body = f"@{user_name} {body}"
+    
+    return add_comment(issue_id, mention_body)
 
 
 def _make_request(query: str, variables: Optional[dict] = None) -> dict:
@@ -298,6 +485,7 @@ def create_issue(
     priority: int = 2,
     state_name: Optional[str] = None,
     parent_id: Optional[str] = None,
+    assignee_name: Optional[str] = None,
 ) -> dict:
     """
     Create an issue in Linear.
@@ -311,6 +499,7 @@ def create_issue(
         priority: 0=none, 1=urgent, 2=high, 3=medium, 4=low
         state_name: Initial state name (e.g., 'backlog', 'todo', 'in_progress')
         parent_id: Parent issue ID for sub-issues
+        assignee_name: Optional user name to assign the issue to
 
     Returns:
         Issue dict with id, identifier, url
@@ -354,6 +543,14 @@ def create_issue(
     if parent_id:
         input_data["parentId"] = parent_id
 
+    # Resolve assignee name to ID
+    if assignee_name:
+        assignee_id = get_user_by_name(assignee_name)
+        if assignee_id:
+            input_data["assigneeId"] = assignee_id
+        else:
+            logger.warning(f"Assignee '{assignee_name}' not found, issue will be unassigned")
+
     variables = {"input": input_data}
 
     data = _make_request(mutation, variables)
@@ -364,6 +561,77 @@ def create_issue(
         logger.info(f"Created issue {issue.get('identifier')}: {title}")
         return issue
     return {}
+
+
+def create_task_with_approach(
+    project_id: str,
+    team_id: str,
+    parent_id: str,
+    title: str,
+    objective: str,
+    approach: str,
+    inputs: list[str],
+    expected_output: str,
+    labels: Optional[list[str]] = None,
+    assignee_name: str = "vineyard",
+    priority: int = 3,
+) -> dict:
+    """
+    Create a task issue with detailed approach for review.
+    
+    The task includes a structured description with objective, approach,
+    inputs, and expected output to allow operator review before execution.
+    
+    Args:
+        project_id: Linear project ID
+        team_id: Linear team ID
+        parent_id: Parent issue ID (phase issue)
+        title: Task title
+        objective: What this task will accomplish
+        approach: Detailed description of HOW the task will be executed
+        inputs: List of input references/descriptions
+        expected_output: What will be produced
+        labels: Optional list of label names
+        assignee_name: User to assign (default: "vineyard")
+        priority: Issue priority (default: 3 = medium)
+        
+    Returns:
+        Issue dict with id, identifier, url
+    """
+    # Build structured description
+    inputs_formatted = "\n".join([f"- {inp}" for inp in inputs]) if inputs else "- None specified"
+    
+    description = f"""## Objective
+
+{objective}
+
+## Approach
+
+{approach}
+
+## Inputs
+
+{inputs_formatted}
+
+## Expected Output
+
+{expected_output}
+
+---
+*Review this approach and leave a comment if you'd like changes before execution.*
+"""
+    
+    return create_issue(
+        project_id=project_id,
+        team_id=team_id,
+        title=title,
+        description=description,
+        labels=labels,
+        priority=priority,
+        state_name="backlog",
+        parent_id=parent_id,
+        assignee_name=assignee_name,
+    )
 
 
 def create_issues_batch(
@@ -860,6 +1128,9 @@ def update_phase_issue(
     progress_message: Optional[str] = None,
     completed_tasks: Optional[list[str]] = None,
     execution_id: Optional[str] = None,
+    assign_to: Optional[str] = None,
+    mention_user: Optional[str] = None,
+    output_links: Optional[list[str]] = None,
 ) -> bool:
     """
     Update a phase issue with progress.
@@ -867,10 +1138,13 @@ def update_phase_issue(
     Args:
         phase_issue_id: The phase issue ID
         team_id: Team ID for state lookup
-        status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked'
+        status: One of 'started', 'in_progress', 'completed', 'failed', 'blocked', 'awaiting_review'
         progress_message: Optional message to add as comment
         completed_tasks: List of completed task descriptions (for updating checklist)
         execution_id: Factory execution ID (for failed status comments)
+        assign_to: Optional user name to assign the issue to (for reviews)
+        mention_user: Optional user name to @ mention in comment (for failures/reviews)
+        output_links: Optional list of output artifact URLs to link
 
     Returns:
         True if update successful
@@ -885,18 +1159,48 @@ def update_phase_issue(
         "completed": "done",
         "failed": "in_progress",  # Keep visible, add failed label instead
         "blocked": "in_progress",  # Stay in progress but add blocked label
+        "awaiting_review": "in_progress",  # Stay visible, add needs-review label
     }
 
     target_state = state_map.get(status, "in_progress")
     if not transition_issue(phase_issue_id, team_id, target_state):
         success = False
 
+    # Handle assignment
+    if assign_to:
+        assign_issue_by_name(phase_issue_id, assign_to)
+
     # Handle blocked status specially
     if status == "blocked" and progress_message:
         block_issue(phase_issue_id, team_id, progress_message)
 
-    # Handle failed status - add failed label and detailed comment
-    if status == "failed":
+    # Handle awaiting_review status - add label, mention operator
+    elif status == "awaiting_review":
+        # Add needs-review label
+        labels = ensure_labels(team_id, ["needs-review"])
+        if "needs-review" in labels:
+            _add_label_to_issue(phase_issue_id, labels["needs-review"])
+
+        # Build review comment
+        review_comment = "## 👀 Ready for Review\n\n"
+        if progress_message:
+            review_comment += f"{progress_message}\n\n"
+        
+        if output_links:
+            review_comment += "**Outputs:**\n"
+            review_comment += "\n".join([f"- {link}" for link in output_links])
+            review_comment += "\n\n"
+        
+        review_comment += "Please review and approve to continue."
+
+        # Mention user if specified
+        if mention_user:
+            mention_user_in_comment(phase_issue_id, mention_user, review_comment)
+        else:
+            add_comment(phase_issue_id, review_comment)
+
+    # Handle failed status - add failed label, mention operator
+    elif status == "failed":
         # Add failed label
         labels = ensure_labels(team_id, ["failed"])
         if "failed" in labels:
@@ -921,10 +1225,15 @@ def update_phase_issue(
         if execution_id:
             error_comment += f"**Execution ID:** `{execution_id}`\n\n"
         error_comment += "---\n*This issue can be retried by commenting \"retry\" or moving to Todo*"
-        add_comment(phase_issue_id, error_comment)
+        
+        # Mention user if specified (for failure notification)
+        if mention_user:
+            mention_user_in_comment(phase_issue_id, mention_user, error_comment)
+        else:
+            add_comment(phase_issue_id, error_comment)
 
     # Add progress comment if provided (for non-blocked, non-failed statuses)
-    elif progress_message and status != "blocked":
+    elif progress_message and status not in ("blocked", "awaiting_review"):
         status_emoji = {
             "started": "🚀",
             "in_progress": "🔄",
@@ -932,6 +1241,11 @@ def update_phase_issue(
         }
         emoji = status_emoji.get(status, "📋")
         comment = f"{emoji} **{status.replace('_', ' ').title()}**\n\n{progress_message}"
+        
+        if output_links:
+            comment += "\n\n**Outputs:**\n"
+            comment += "\n".join([f"- {link}" for link in output_links])
+        
         add_comment(phase_issue_id, comment)
 
     return success

@@ -10,7 +10,7 @@ from src.models import (
     FeatureSpec,
     ResearchEnrichmentOutput,
 )
-from src.tools import linear, llm, miro
+from src.tools import llm, miro
 
 
 class DesignAgent(BaseAgent):
@@ -42,9 +42,7 @@ class DesignAgent(BaseAgent):
 
         # Generate UI copy
         ui_copy = self._generate_ui_copy(opp, research)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, features)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = DesignOutput(
             prd_markdown=prd,
@@ -52,7 +50,6 @@ class DesignAgent(BaseAgent):
             user_flow_miro_url=miro_url,
             features=features,
             ui_copy=ui_copy,
-            linear_issues=linear_issues,
         )
 
         self.log_complete()
@@ -265,44 +262,3 @@ Generate JSON with UI copy:
             self.logger.error(f"Failed to generate UI copy: {e}")
             return {"headline": opp.one_liner}
 
-    def _create_linear_issues(
-        self, state: FactoryState, features: list[FeatureSpec]
-    ) -> list[str]:
-        """Create Linear issues for design artifacts."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Design] PRD Complete",
-                    "description": "Product Requirements Document has been generated.",
-                },
-                {
-                    "title": "[Design] User Flows Complete",
-                    "description": "User flow diagrams created in Miro.",
-                },
-            ]
-
-            # Add issues for P0 features
-            for feature in features:
-                if feature.priority == "P0":
-                    issues.append(
-                        {
-                            "title": f"[Design] Feature Spec: {feature.name}",
-                            "description": f"{feature.description}\n\n"
-                            f"**User Stories:**\n"
-                            + "\n".join([f"- {s}" for s in feature.user_stories]),
-                        }
-                    )
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import SECURITY_AGENT_PROMPT
 from src.models import FactoryState
-from src.tools import linear, llm
+from src.tools import llm
 
 
 class SecurityAgent(BaseAgent):
@@ -43,8 +43,7 @@ class SecurityAgent(BaseAgent):
         # Generate security documentation
         security_doc = self._generate_security_doc(opp, recommendations)
 
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, recommendations)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "code_issues": code_issues,
@@ -52,7 +51,6 @@ class SecurityAgent(BaseAgent):
             "dependency_issues": dep_issues,
             "recommendations": recommendations,
             "security_documentation": security_doc,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -222,32 +220,3 @@ Keep it concise but comprehensive.
         except Exception as e:
             self.logger.error(f"Failed to generate security doc: {e}")
             return f"# {opp.name} Security Documentation\n\n[Generation pending]"
-
-    def _create_linear_issues(
-        self, state: FactoryState, recommendations: list
-    ) -> list[str]:
-        """Create Linear issues for security recommendations."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = []
-            for rec in recommendations[:5]:  # Limit to top 5
-                issues.append({
-                    "title": f"[Security] {rec.get('title', 'Security Task')}",
-                    "description": f"**Priority:** {rec.get('priority', 'P1')}\n\n"
-                    f"{rec.get('description', '')}\n\n"
-                    f"**Remediation:** {rec.get('remediation', 'See details')}",
-                    "labels": ["security"],
-                })
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

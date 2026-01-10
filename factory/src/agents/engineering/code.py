@@ -10,7 +10,7 @@ from src.models import (
     GeneratedFile,
     SpecOutput,
 )
-from src.tools import github, linear, llm
+from src.tools import github, llm
 from src.tools.generation_context import GenerationContext
 
 
@@ -80,14 +80,13 @@ class CodeAgent(BaseAgent):
         # Create GitHub repository
         repo_url = self._create_github_repo(opp, all_files)
 
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, all_files)
+        # Note: Linear task tracking is now handled at the runner level
+        # via upfront task creation and status updates
 
         output = {
             "files": all_files,
             "github_repo_url": repo_url,
             "file_count": len(all_files),
-            "linear_issues": linear_issues,
             "folder_structure": ctx.get_folder_structure(),
         }
 
@@ -615,29 +614,3 @@ Do NOT create files that already exist in the project structure above.
             self.logger.error(f"Failed to create GitHub repo: {e}")
             return ""
 
-    def _create_linear_issues(
-        self, state: FactoryState, files: list[GeneratedFile]
-    ) -> list[str]:
-        """Create Linear issues for code generation."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Build] Code Generation Complete",
-                    "description": f"Generated {len(files)} files:\n\n"
-                    + "\n".join([f"- `{f.path}`" for f in files[:20]]),
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

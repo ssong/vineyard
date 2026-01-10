@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import LAUNCH_AGENT_PROMPT
 from src.models import FactoryState, ProductHuntListing
-from src.tools import linear, llm
+from src.tools import llm
 
 
 class LaunchAgent(BaseAgent):
@@ -34,16 +34,13 @@ class LaunchAgent(BaseAgent):
 
         # Schedule coordination
         schedule = self._generate_launch_schedule(launch_prefs)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, checklist)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "product_hunt_listing": ph_listing,
             "launch_checklist": checklist,
             "response_templates": templates,
             "launch_schedule": schedule,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -186,38 +183,3 @@ Generate JSON:
             self.logger.error(f"Failed to generate schedule: {e}")
             return {"optimal_launch_day": "Tuesday"}
 
-    def _create_linear_issues(
-        self, state: FactoryState, checklist: list
-    ) -> list[str]:
-        """Create Linear issues for launch tasks."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Launch] Product Hunt Listing Ready",
-                    "description": "PH tagline, description, and first comment drafted.",
-                }
-            ]
-
-            # Add checklist items as issues
-            for phase in checklist:
-                phase_name = phase.get("phase", "")
-                for task in phase.get("tasks", [])[:3]:  # Limit per phase
-                    issues.append({
-                        "title": f"[Launch] {task.get('task', 'Task')}",
-                        "description": f"**Phase:** {phase_name}\n**Owner:** {task.get('owner', 'TBD')}",
-                        "labels": ["launch"],
-                    })
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues[:10]
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

@@ -9,7 +9,7 @@ from src.models import (
     FactoryState,
     SocialContent,
 )
-from src.tools import linear, llm
+from src.tools import llm
 
 
 class MarketingAgent(BaseAgent):
@@ -38,16 +38,13 @@ class MarketingAgent(BaseAgent):
 
         # Generate blog post outlines
         blog_outlines = self._generate_blog_outlines(opp, research)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "landing_page_copy": landing_copy,
             "email_sequences": email_sequences,
             "social_content": social,
             "blog_outlines": blog_outlines,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -245,36 +242,4 @@ Generate 5 blog post outlines.
             return result.get("posts", [])
         except Exception as e:
             self.logger.error(f"Failed to generate blog outlines: {e}")
-            return []
-
-    def _create_linear_issues(self, state: FactoryState) -> list[str]:
-        """Create Linear issues for marketing."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Marketing] Landing Page Copy Complete",
-                    "description": "Landing page copy has been generated and is ready for review.",
-                },
-                {
-                    "title": "[Marketing] Email Sequences Ready",
-                    "description": "Welcome and activation email sequences generated.",
-                },
-                {
-                    "title": "[Marketing] Social Launch Content Ready",
-                    "description": "Twitter thread and LinkedIn post drafted.",
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
             return []

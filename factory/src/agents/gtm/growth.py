@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import GROWTH_AGENT_PROMPT
 from src.models import FactoryState, GrowthExperiment
-from src.tools import linear, llm
+from src.tools import llm
 
 
 class GrowthAgent(BaseAgent):
@@ -33,16 +33,13 @@ class GrowthAgent(BaseAgent):
 
         # Generate weekly report template
         report_template = self._generate_report_template(opp)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, experiments)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = {
             "experiments": experiments,
             "analytics_events": analytics_events,
             "growth_playbook": playbook,
             "weekly_report_template": report_template,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -188,45 +185,3 @@ Use placeholder values like [X%] or [N users].
             self.logger.error(f"Failed to generate report template: {e}")
             return "# Weekly Metrics Report\n\n[Template to be generated]"
 
-    def _create_linear_issues(
-        self, state: FactoryState, experiments: list[GrowthExperiment]
-    ) -> list[str]:
-        """Create Linear issues for growth tasks."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Growth] Analytics Setup",
-                    "description": "Implement analytics events tracking.",
-                    "labels": ["growth"],
-                },
-                {
-                    "title": "[Growth] Growth Playbook Ready",
-                    "description": "Growth strategy document completed.",
-                    "labels": ["growth"],
-                },
-            ]
-
-            # Add experiment issues
-            for exp in experiments[:3]:
-                issues.append({
-                    "title": f"[Growth] Experiment: {exp.name}",
-                    "description": f"**Hypothesis:** {exp.hypothesis}\n\n"
-                    f"**Metric:** {exp.metric}\n"
-                    f"**Success Criteria:** {exp.success_criteria}\n\n"
-                    f"**Implementation:** {exp.implementation_notes}",
-                    "labels": ["growth", "experiment"],
-                })
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

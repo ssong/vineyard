@@ -11,7 +11,7 @@ from src.models import (
     SEOStrategy,
     UserPersona,
 )
-from src.tools import linear, llm, miro
+from src.tools import llm, miro
 
 
 class ResearchEnrichmentAgent(BaseAgent):
@@ -43,9 +43,7 @@ class ResearchEnrichmentAgent(BaseAgent):
 
         # Generate positioning statement
         positioning = self._generate_positioning(opp, competitor_matrix)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, personas, seo_strategy)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = ResearchEnrichmentOutput(
             personas=personas,
@@ -54,7 +52,6 @@ class ResearchEnrichmentAgent(BaseAgent):
             competitive_landscape_miro_url=miro_url,
             positioning_statement=positioning,
             seo_strategy=seo_strategy,
-            linear_issues=linear_issues,
         )
 
         self.log_complete()
@@ -274,34 +271,3 @@ Format: "For [target customer] who [statement of need], [product name] is a [pro
             self.logger.error(f"Failed to generate positioning: {e}")
             return f"{opp.name} helps {opp.target_segment} by {opp.differentiation_angle}"
 
-    def _create_linear_issues(
-        self, state: FactoryState, personas: list[UserPersona], seo: SEOStrategy
-    ) -> list[str]:
-        """Create Linear issues for research enrichment."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Research] Personas Complete",
-                    "description": f"Created {len(personas)} personas:\n\n"
-                    + "\n".join([f"- {p.name}: {p.role}" for p in personas]),
-                },
-                {
-                    "title": "[Research] SEO Strategy Complete",
-                    "description": f"Target keywords: {len(seo.primary_keywords)}\n"
-                    f"Content opportunities: {len(seo.content_opportunities)}",
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

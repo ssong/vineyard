@@ -5,7 +5,7 @@ from typing import Any
 from src.agents.base import BaseAgent
 from src.config.prompts import TEST_AGENT_PROMPT
 from src.models import FactoryState, GeneratedFile
-from src.tools import github, linear, llm
+from src.tools import github, llm
 from src.tools.generation_context import GenerationContext
 
 
@@ -72,8 +72,7 @@ class TestAgent(BaseAgent):
         # Push to GitHub
         self._push_tests_to_github(opp, test_files)
 
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, test_files)
+        # Note: Linear task tracking is now handled at the runner level
 
         # Count by type
         unit_count = len([f for f in test_files if "unit" in f.path or "__tests__" in f.path])
@@ -85,7 +84,6 @@ class TestAgent(BaseAgent):
             "unit_test_count": unit_count,
             "integration_test_count": integration_count,
             "e2e_test_count": e2e_count,
-            "linear_issues": linear_issues,
         }
 
         self.log_complete()
@@ -436,29 +434,3 @@ Each fixture should:
         except Exception as e:
             self.logger.error(f"Failed to push tests to GitHub: {e}")
 
-    def _create_linear_issues(
-        self, state: FactoryState, tests: list[GeneratedFile]
-    ) -> list[str]:
-        """Create Linear issues for test generation."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = [
-                {
-                    "title": "[Build] Test Suite Generated",
-                    "description": f"Generated {len(tests)} test files:\n\n"
-                    + "\n".join([f"- `{t.path}`" for t in tests[:15]]),
-                },
-            ]
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

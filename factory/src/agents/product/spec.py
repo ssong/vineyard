@@ -12,7 +12,7 @@ from src.models import (
     FactoryState,
     SpecOutput,
 )
-from src.tools import linear, llm, miro
+from src.tools import llm, miro
 
 
 class SpecAgent(BaseAgent):
@@ -45,9 +45,7 @@ class SpecAgent(BaseAgent):
 
         # Generate task breakdown
         tasks = self._generate_task_breakdown(opp, design, api_endpoints, db_schema)
-
-        # Create Linear issues
-        linear_issues = self._create_linear_issues(state, tasks)
+        # Note: Linear task tracking is now handled at the runner level
 
         output = SpecOutput(
             technical_spec_markdown=tech_spec,
@@ -55,7 +53,6 @@ class SpecAgent(BaseAgent):
             database_schema=db_schema,
             task_breakdown=tasks,
             architecture_miro_url=miro_url,
-            linear_issues=linear_issues,
         )
 
         self.log_complete()
@@ -347,34 +344,3 @@ Include tasks for:
             self.logger.error(f"Failed to generate task breakdown: {e}")
             return []
 
-    def _create_linear_issues(
-        self, state: FactoryState, tasks: list[EngineeringTask]
-    ) -> list[str]:
-        """Create Linear issues for engineering tasks."""
-        try:
-            project = linear.get_project(state.handoff.linear_project_id)
-            team_id = project.get("teams", {}).get("nodes", [{}])[0].get("id", "")
-
-            if not team_id:
-                return []
-
-            issues = []
-            for task in tasks:
-                issues.append(
-                    {
-                        "title": f"[Eng] {task.title}",
-                        "description": f"{task.description}\n\n"
-                        f"**Story Points:** {task.story_points}\n\n"
-                        f"**Acceptance Criteria:**\n"
-                        + "\n".join([f"- [ ] {c}" for c in task.acceptance_criteria]),
-                        "labels": task.labels,
-                    }
-                )
-
-            return linear.create_issues_batch(
-                state.handoff.linear_project_id, team_id, issues
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Linear issues: {e}")
-            return []

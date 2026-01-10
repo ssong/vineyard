@@ -155,3 +155,194 @@ class BaseAgent(ABC):
     def log_error(self, error: Exception):
         """Log agent error."""
         self.logger.error(f"[{self.domain.upper()}] {self.name} failed: {error}")
+
+    # =========================================================================
+    # Task Tracking Methods
+    # =========================================================================
+
+    def start_task(
+        self,
+        state: FactoryState,
+        task_id: str,
+        description: str,
+        feedback_incorporated: str | None = None,
+    ) -> bool:
+        """
+        Mark a Linear task as in-progress and add start comment.
+        
+        Args:
+            state: Factory state with Linear tracking info
+            task_id: Linear issue ID for the task
+            description: Description of what's being started
+            feedback_incorporated: Optional summary of operator feedback being used
+            
+        Returns:
+            True if update successful
+        """
+        from src.tools import linear
+        
+        if not task_id or not state.linear_team_id:
+            return False
+        
+        # Transition to in-progress
+        success = linear.start_issue(task_id, state.linear_team_id)
+        
+        # Add start comment
+        if feedback_incorporated:
+            comment = f"🚀 **Starting**: {description}\n\n📝 **Incorporating feedback**: {feedback_incorporated}"
+        else:
+            comment = f"🚀 **Starting**: {description}"
+        
+        linear.add_comment(task_id, comment)
+        
+        self.logger.info(f"Started task {task_id}: {description}")
+        return success
+
+    def complete_task(
+        self,
+        state: FactoryState,
+        task_id: str,
+        summary: str,
+        output_links: list[str] | None = None,
+    ) -> bool:
+        """
+        Mark a Linear task as done with summary comment.
+        
+        Args:
+            state: Factory state with Linear tracking info
+            task_id: Linear issue ID for the task
+            summary: Summary of what was accomplished
+            output_links: Optional list of output artifact URLs to attach
+            
+        Returns:
+            True if update successful
+        """
+        from src.tools import linear
+        
+        if not task_id or not state.linear_team_id:
+            return False
+        
+        # Transition to done
+        success = linear.complete_issue(task_id, state.linear_team_id)
+        
+        # Add completion comment
+        comment = f"✅ **Completed**\n\n{summary}"
+        
+        if output_links:
+            comment += "\n\n**Outputs:**\n"
+            comment += "\n".join([f"- {link}" for link in output_links])
+        
+        linear.add_comment(task_id, comment)
+        
+        self.logger.info(f"Completed task {task_id}")
+        return success
+
+    def fail_task(
+        self,
+        state: FactoryState,
+        task_id: str,
+        error: str,
+        operator_name: str = "sang",
+    ) -> bool:
+        """
+        Mark a Linear task as failed and tag operator.
+        
+        Args:
+            state: Factory state with Linear tracking info
+            task_id: Linear issue ID for the task
+            error: Error message explaining the failure
+            operator_name: Operator to tag (default: sang)
+            
+        Returns:
+            True if update successful
+        """
+        from src.tools import linear
+        
+        if not task_id or not state.linear_team_id:
+            return False
+        
+        # Add failed label
+        labels = linear.ensure_labels(state.linear_team_id, ["failed"])
+        if "failed" in labels:
+            linear._add_label_to_issue(task_id, labels["failed"])
+        
+        # Add failure comment with operator mention
+        error_snippet = error[:1500] if len(error) > 1500 else error
+        body = f"""## ❌ Task Failed
+
+**Error:**
+```
+{error_snippet}
+```
+
+Please review and advise on next steps."""
+        
+        linear.mention_user_in_comment(task_id, operator_name, body)
+        
+        self.logger.error(f"Task {task_id} failed: {error[:100]}...")
+        return True
+
+    def get_task_feedback(
+        self,
+        state: FactoryState,
+        task_id: str,
+    ) -> list[str]:
+        """
+        Read operator comments from a task issue for incorporating feedback.
+        
+        Returns comments from the operator (not from the automation),
+        newest first.
+        
+        Args:
+            state: Factory state
+            task_id: Linear issue ID for the task
+            
+        Returns:
+            List of comment bodies from the operator
+        """
+        from src.tools import linear
+        
+        if not task_id:
+            return []
+        
+        comments = linear.get_issue_comments(task_id)
+        
+        # Filter to human comments (exclude automation comments)
+        # Automation comments typically start with emojis like 🚀, ✅, 📝
+        automation_prefixes = ("🚀", "✅", "❌", "📝", "🔄", "⏸️", "**Blocked**", "**Starting**", "**Completed**")
+        
+        feedback = []
+        for comment in comments:
+            body = comment.get("body", "").strip()
+            user_name = comment.get("user", {}).get("name", "").lower()
+            
+            # Skip automation comments
+            if any(body.startswith(prefix) for prefix in automation_prefixes):
+                continue
+            
+            # Skip comments from vineyard (automation user)
+            if "vineyard" in user_name:
+                continue
+            
+            if body:
+                feedback.append(body)
+        
+        return feedback
+
+    def incorporate_feedback(self, feedback: list[str]) -> str | None:
+        """
+        Summarize feedback comments for incorporation into task execution.
+        
+        Args:
+            feedback: List of comment bodies from operator
+            
+        Returns:
+            Summary string for task execution, or None if no feedback
+        """
+        if not feedback:
+            return None
+        
+        # Take the most recent feedback (first in list since sorted newest first)
+        # Could be enhanced to summarize multiple comments if needed
+        return feedback[0][:500] if feedback[0] else None
+
