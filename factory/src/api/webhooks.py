@@ -764,6 +764,9 @@ async def linear_webhook_status():
 @router.get("/linear/debug/states")
 async def debug_list_states():
     """Debug endpoint: List all states with their linear_phase_issues."""
+    from src.orchestrator.persistence import STATE_DIR, STORAGE_BACKEND, REDIS_URL
+    import os
+
     all_states = list_states()
     result = []
 
@@ -789,6 +792,15 @@ async def debug_list_states():
 
     return {
         "total_states": len(all_states),
+        "storage": {
+            "backend": STORAGE_BACKEND,
+            "redis_configured": bool(REDIS_URL),
+            "redis_url": REDIS_URL[:20] + "..." if REDIS_URL and len(REDIS_URL) > 20 else REDIS_URL,
+            "state_dir": str(STATE_DIR),
+            "state_dir_exists": STATE_DIR.exists(),
+            "cwd": os.getcwd(),
+            "home": os.path.expanduser("~"),
+        },
         "states": result,
     }
 

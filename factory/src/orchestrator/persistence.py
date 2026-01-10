@@ -349,14 +349,41 @@ def _load_state_redis(execution_id: str) -> Optional[FactoryState]:
 def list_states(status_filter: Optional[str] = None) -> list[dict]:
     """List all factory states, optionally filtered by status."""
     states = []
-    
-    if STORAGE_BACKEND == "file":
-        _ensure_state_dir()
-        for filepath in STATE_DIR.glob("*.json"):
+
+    if STORAGE_BACKEND == "redis" and REDIS_URL:
+        states = _list_states_redis(status_filter)
+    else:
+        states = _list_states_file(status_filter)
+
+    return sorted(states, key=lambda x: x["started_at"], reverse=True)
+
+
+def _list_states_redis(status_filter: Optional[str] = None) -> list[dict]:
+    """List states from Redis."""
+    states = []
+    try:
+        import redis
+        r = redis.from_url(REDIS_URL)
+
+        # Scan for all factory state keys
+        cursor = 0
+        all_keys = []
+        while True:
+            cursor, keys = r.scan(cursor, match="factory:state:*", count=100)
+            all_keys.extend(keys)
+            if cursor == 0:
+                break
+
+        logger.info(f"Found {len(all_keys)} states in Redis")
+
+        for key in all_keys:
             try:
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                
+                data_str = r.get(key)
+                if not data_str:
+                    continue
+
+                data = json.loads(data_str)
+
                 # Filter by status if requested
                 if status_filter:
                     current_status = data.get("phase_statuses", {}).get(
@@ -364,7 +391,7 @@ def list_states(status_filter: Optional[str] = None) -> list[dict]:
                     )
                     if current_status != status_filter:
                         continue
-                
+
                 states.append({
                     "execution_id": data["execution_id"],
                     "current_phase": data["current_phase"],
@@ -373,9 +400,48 @@ def list_states(status_filter: Optional[str] = None) -> list[dict]:
                     "opportunity_name": data.get("handoff", {}).get("opportunity", {}).get("name", "Unknown"),
                 })
             except Exception as e:
-                logger.warning(f"Failed to read state file {filepath}: {e}")
-    
-    return sorted(states, key=lambda x: x["started_at"], reverse=True)
+                logger.warning(f"Failed to read state from Redis key {key}: {e}")
+
+    except Exception as e:
+        logger.error(f"Failed to list states from Redis: {e}")
+        # Fallback to file storage
+        return _list_states_file(status_filter)
+
+    return states
+
+
+def _list_states_file(status_filter: Optional[str] = None) -> list[dict]:
+    """List states from file storage."""
+    states = []
+    _ensure_state_dir()
+    logger.info(f"Listing states from: {STATE_DIR} (exists={STATE_DIR.exists()})")
+    json_files = list(STATE_DIR.glob("*.json"))
+    logger.info(f"Found {len(json_files)} state files")
+
+    for filepath in json_files:
+        try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+
+            # Filter by status if requested
+            if status_filter:
+                current_status = data.get("phase_statuses", {}).get(
+                    data.get("current_phase"), ""
+                )
+                if current_status != status_filter:
+                    continue
+
+            states.append({
+                "execution_id": data["execution_id"],
+                "current_phase": data["current_phase"],
+                "status": data.get("phase_statuses", {}).get(data["current_phase"], "unknown"),
+                "started_at": data["started_at"],
+                "opportunity_name": data.get("handoff", {}).get("opportunity", {}).get("name", "Unknown"),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to read state file {filepath}: {e}")
+
+    return states
 
 
 def delete_state(execution_id: str) -> bool:
