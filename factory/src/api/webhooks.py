@@ -251,18 +251,25 @@ def find_phase_for_issue(issue_id: str) -> Optional[tuple[str, str]]:
         Tuple of (execution_id, phase_name) or None if not found.
     """
     all_states = list_states()
+    logger.info(f"Searching {len(all_states)} states for phase issue {issue_id}")
 
     for state_summary in all_states:
         exec_id = state_summary.get("execution_id", "")
         state = load_state(exec_id)
         if not state:
+            logger.debug(f"Could not load state for {exec_id}")
             continue
+
+        logger.debug(f"State {exec_id[:8]} has {len(state.linear_phase_issues)} phase issues")
 
         for phase_name, phase_info in state.linear_phase_issues.items():
             phase_issue_id = phase_info.get("id") if isinstance(phase_info, dict) else None
+            logger.debug(f"  Phase {phase_name}: issue_id={phase_issue_id}")
             if phase_issue_id == issue_id:
+                logger.info(f"Found match! Execution {exec_id}, phase {phase_name}")
                 return (state.execution_id, phase_name)
 
+    logger.warning(f"No phase found for issue {issue_id} after checking {len(all_states)} states")
     return None
 
 
@@ -386,17 +393,28 @@ async def handle_approval_request(
     This runs as a background task after the webhook returns.
     """
     safe_commenter = commenter_name[:50] if commenter_name else "Unknown"
-    logger.info(f"Processing approval request on {issue_identifier} from {safe_commenter}")
+    logger.info(f"Processing approval request on {issue_identifier} (id={issue_id}) from {safe_commenter}")
 
     # Find execution and phase for this issue
     result = find_phase_for_issue(issue_id)
 
     if not result:
-        logger.warning(f"No factory phase found for issue {issue_identifier}")
-        linear.add_comment(
-            issue_id,
-            "Could not find a factory checkpoint for this issue."
-        )
+        logger.warning(f"No factory phase found for issue {issue_identifier} (id={issue_id})")
+
+        # Try to provide more helpful info - check if this is a work item
+        exec_id = find_execution_for_issue(issue_id)
+        if exec_id:
+            linear.add_comment(
+                issue_id,
+                "This appears to be a work item, not a phase checkpoint issue. "
+                "To approve a checkpoint, comment on the main phase issue (e.g., 'Research Enrichment', 'Design', etc.)."
+            )
+        else:
+            linear.add_comment(
+                issue_id,
+                "Could not find a factory checkpoint for this issue. "
+                "Make sure you're commenting on a phase issue that is awaiting approval."
+            )
         return
 
     execution_id, phase_name = result
@@ -740,4 +758,59 @@ async def linear_webhook_status():
             },
         },
         "status": "ready",
+    }
+
+
+@router.get("/linear/debug/states")
+async def debug_list_states():
+    """Debug endpoint: List all states with their linear_phase_issues."""
+    all_states = list_states()
+    result = []
+
+    for state_summary in all_states:
+        exec_id = state_summary.get("execution_id", "")
+        state = load_state(exec_id)
+
+        state_info = {
+            "execution_id": exec_id,
+            "current_phase": state_summary.get("current_phase"),
+            "status": state_summary.get("status"),
+            "opportunity_name": state_summary.get("opportunity_name"),
+        }
+
+        if state:
+            state_info["linear_phase_issues"] = state.linear_phase_issues
+            state_info["linear_team_id"] = state.linear_team_id
+            state_info["has_linear_tracking"] = len(state.linear_phase_issues) > 0
+        else:
+            state_info["error"] = "Could not load full state"
+
+        result.append(state_info)
+
+    return {
+        "total_states": len(all_states),
+        "states": result,
+    }
+
+
+@router.get("/linear/debug/issue/{issue_id}")
+async def debug_find_issue(issue_id: str):
+    """Debug endpoint: Try to find which state/phase an issue belongs to."""
+    # Check phase issues
+    phase_result = find_phase_for_issue(issue_id)
+
+    # Check work items
+    exec_result = find_execution_for_issue(issue_id)
+
+    return {
+        "issue_id": issue_id,
+        "phase_match": {
+            "found": phase_result is not None,
+            "execution_id": phase_result[0] if phase_result else None,
+            "phase": phase_result[1] if phase_result else None,
+        },
+        "work_item_match": {
+            "found": exec_result is not None,
+            "execution_id": exec_result,
+        },
     }
