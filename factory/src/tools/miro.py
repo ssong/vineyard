@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.config import settings
+from src.utils import truncate_text, MiroLimits
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,8 @@ def _make_request(
 def create_board(name: str, description: str = "") -> dict:
     """Create a new Miro board."""
     data = {
-        "name": name,
-        "description": description,
+        "name": truncate_text(name, MiroLimits.BOARD_NAME),
+        "description": truncate_text(description, MiroLimits.BOARD_DESCRIPTION),
     }
 
     result = _make_request("POST", "/boards", data)
@@ -61,7 +62,7 @@ def create_board(name: str, description: str = "") -> dict:
 def create_frame(board_id: str, title: str, x: int = 0, y: int = 0) -> dict:
     """Create a frame on a board."""
     data = {
-        "data": {"title": title, "format": "custom"},
+        "data": {"title": truncate_text(title, MiroLimits.FRAME_TITLE), "format": "custom"},
         "position": {"x": x, "y": y},
         "geometry": {"width": 800, "height": 600},
     }
@@ -81,7 +82,7 @@ def create_shape(
 ) -> dict:
     """Create a shape on a board."""
     data = {
-        "data": {"content": content, "shape": shape_type},
+        "data": {"content": truncate_text(content, MiroLimits.SHAPE_CONTENT), "shape": shape_type},
         "position": {"x": x, "y": y},
         "geometry": {"width": width, "height": height},
         "style": {"fillColor": fill_color},
@@ -107,7 +108,7 @@ def create_sticky_note(
     }
 
     data = {
-        "data": {"content": content, "shape": "square"},
+        "data": {"content": truncate_text(content, MiroLimits.STICKY_NOTE_CONTENT), "shape": "square"},
         "position": {"x": x, "y": y},
         "style": {"fillColor": color_map.get(color, "#fff9b1")},
     }

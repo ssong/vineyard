@@ -5,6 +5,7 @@ from typing import Optional
 
 from src.models import FactoryState, Phase, PhaseStatus
 from src.slack.app import app
+from src.utils import truncate_text, SlackLimits
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +119,13 @@ def send_factory_complete(channel_id: str, state: FactoryState):
 def send_factory_error(channel_id: str, state: FactoryState, error: str):
     """Send factory error notification."""
     try:
+        # Truncate error message to avoid Slack API limits
+        truncated_error = truncate_text(error, SlackLimits.ERROR_MESSAGE)
         app.client.chat_postMessage(
             channel=channel_id,
             text=f"❌ *Factory Error*\n\n"
             f"Phase: {state.current_phase.value}\n"
-            f"Error: {error}\n\n"
+            f"Error: {truncated_error}\n\n"
             f"Check Linear for details and retry.",
         )
     except Exception as e:

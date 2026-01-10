@@ -7,6 +7,7 @@ from typing import Optional
 import httpx
 
 from src.config import settings
+from src.utils import truncate_text, LinearLimits
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,8 @@ def create_issue(
     input_data = {
         "projectId": project_id,
         "teamId": team_id,
-        "title": title,
-        "description": description,
+        "title": truncate_text(title, LinearLimits.ISSUE_TITLE),
+        "description": truncate_text(description, LinearLimits.ISSUE_DESCRIPTION),
         "priority": priority,
     }
 
@@ -472,7 +473,7 @@ def add_comment(issue_id: str, body: str) -> bool:
     variables = {
         "input": {
             "issueId": issue_id,
-            "body": body,
+            "body": truncate_text(body, LinearLimits.COMMENT_BODY),
         }
     }
 

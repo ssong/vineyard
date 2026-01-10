@@ -12,8 +12,22 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 
+# Linear API character limits
+MAX_PROJECT_DESCRIPTION_LENGTH = 255
+MAX_ISSUE_TITLE_LENGTH = 500
+MAX_ISSUE_DESCRIPTION_LENGTH = 50000
+MAX_COMMENT_LENGTH = 10000
+MAX_LABEL_NAME_LENGTH = 50
+
 # Cache for labels (cleared on module reload)
 _labels_cache: dict[str, dict[str, str]] = {}
+
+
+def _truncate(text: str, max_length: int, suffix: str = "...") -> str:
+    """Truncate text to max_length, adding suffix if truncated."""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - len(suffix)] + suffix
 
 
 def _make_request(query: str, variables: Optional[dict] = None) -> dict:
@@ -205,38 +219,16 @@ def create_project_for_opportunity(opp_report: OpportunityReport) -> str:
     }
     """
 
-    project_description = f"""# {opp.name}
-
-{opp.one_liner}
-
-## Problem Statement
-{opp.problem_statement}
-
-## Target Market
-{opp.target_market_description}
-
-## Scores
-- Overall: {opp.overall_score}/100
-- 4U Score: {opp.four_u_score}/100
-- Solo Viability: {opp.solo_viability_score}/100
-- Acquirability: {opp.acquirability_score}/100
-
-## Build Estimate
-- Complexity: {opp.build_complexity}
-- Time: {opp.estimated_build_weeks} weeks
-
-## Revenue Forecast (12 months)
-- Conservative: ${opp_report.forecast.mrr_month_12_conservative/100:,.0f}/mo
-- Moderate: ${opp_report.forecast.mrr_month_12_moderate/100:,.0f}/mo
-- Optimistic: ${opp_report.forecast.mrr_month_12_optimistic/100:,.0f}/mo
-
----
-*Created by Vineyard Research Agent*
-"""
+    # Project description is limited to 255 chars by Linear API
+    # Keep it concise - detailed info goes in project issues
+    project_description = _truncate(
+        f"{opp.one_liner} | Score: {opp.overall_score}/100 | {opp.build_complexity} complexity, {opp.estimated_build_weeks} weeks",
+        MAX_PROJECT_DESCRIPTION_LENGTH,
+    )
 
     variables = {
         "input": {
-            "name": opp.name,
+            "name": _truncate(opp.name, MAX_ISSUE_TITLE_LENGTH),
             "description": project_description,
             "teamIds": [team_id],
         }
@@ -265,23 +257,60 @@ def _create_initial_issues(project_id: str, team_id: str, opp_report: Opportunit
     # Ensure required labels exist
     label_ids = ensure_labels(team_id, ["research", "validation"])
 
+    # Build detailed project overview (this content was previously in project description)
+    project_overview = f"""# {opp.name}
+
+{opp.one_liner}
+
+## Problem Statement
+{opp.problem_statement}
+
+## Target Market
+{opp.target_market_description}
+
+## Scores
+- Overall: {opp.overall_score}/100
+- 4U Score: {opp.four_u_score}/100
+- Solo Viability: {opp.solo_viability_score}/100
+- Acquirability: {opp.acquirability_score}/100
+
+## Build Estimate
+- Complexity: {opp.build_complexity}
+- Time: {opp.estimated_build_weeks} weeks
+
+## Revenue Forecast (12 months)
+- Conservative: ${opp_report.forecast.mrr_month_12_conservative/100:,.0f}/mo
+- Moderate: ${opp_report.forecast.mrr_month_12_moderate/100:,.0f}/mo
+- Optimistic: ${opp_report.forecast.mrr_month_12_optimistic/100:,.0f}/mo
+
+---
+*Created by Vineyard Research Agent*
+"""
+
     issues_to_create = [
         {
+            "title": "[Research] Project Overview",
+            "description": _truncate(project_overview, MAX_ISSUE_DESCRIPTION_LENGTH),
+            "labels": ["research"],
+        },
+        {
             "title": "[Research] Market Analysis Complete",
-            "description": (
+            "description": _truncate(
                 f"Market research completed by Vineyard Research Agent.\n\n"
                 f"**4U Score:** {opp.four_u_score}/100\n"
                 f"**Competitors:** {', '.join(opp.direct_competitors[:3])}\n"
-                f"**Differentiation:** {opp.differentiation_angle}"
+                f"**Differentiation:** {opp.differentiation_angle}",
+                MAX_ISSUE_DESCRIPTION_LENGTH,
             ),
             "labels": ["research"],
         },
         {
             "title": "[Research] Opportunity Selected",
-            "description": (
+            "description": _truncate(
                 f"**{opp.name}** selected for development.\n\n"
                 f"**Recommendation:** {opp_report.recommendation.value}\n\n"
-                f"{opp_report.recommendation_rationale}"
+                f"{opp_report.recommendation_rationale}",
+                MAX_ISSUE_DESCRIPTION_LENGTH,
             ),
             "labels": ["research"],
         },

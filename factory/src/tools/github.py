@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 
 from src.config import settings
+from src.utils import truncate_text, GitHubLimits
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def create_repository(
     """Create a new repository."""
     data = {
         "name": name,
-        "description": description,
+        "description": truncate_text(description, GitHubLimits.REPO_DESCRIPTION),
         "private": private,
         "auto_init": True,
     }
@@ -129,8 +130,8 @@ def create_pull_request(
 ) -> dict:
     """Create a pull request."""
     data = {
-        "title": title,
-        "body": body,
+        "title": truncate_text(title, GitHubLimits.PR_TITLE),
+        "body": truncate_text(body, GitHubLimits.PR_BODY),
         "head": head,
         "base": base,
     }
