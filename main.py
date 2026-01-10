@@ -3,8 +3,9 @@
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
 
-CRITICAL: We must patch the app module BEFORE importing command handlers,
-because decorators register with the app at import time.
+APPROACH: Create temporary apps for each project, import their handlers
+(which register via decorators), then copy the registered listeners to
+our shared app.
 """
 
 import argparse
@@ -34,11 +35,7 @@ FACTORY_PATH = os.path.join(BASE_DIR, "factory")
 
 
 def clear_src_modules():
-    """Clear all src.* modules from sys.modules.
-    
-    This must be done before importing from a different project's src package.
-    Uses list() to avoid 'dictionary changed size during iteration' error.
-    """
+    """Clear all src.* modules from sys.modules."""
     modules_to_remove = [key for key in list(sys.modules.keys()) 
                          if key.startswith('src.') or key == 'src']
     for mod in modules_to_remove:
@@ -47,10 +44,7 @@ def clear_src_modules():
 
 
 def set_project_path(project_path):
-    """Set a project path at the front of sys.path.
-    
-    Removes it first if already present to ensure it's at the front.
-    """
+    """Set a project path at the front of sys.path."""
     if project_path in sys.path:
         sys.path.remove(project_path)
     sys.path.insert(0, project_path)
@@ -68,45 +62,74 @@ def create_shared_app(settings):
     return App(token=settings.slack_bot_token)
 
 
-def register_research_agent_handlers(app):
-    """Register Research Agent handlers by patching app before import."""
+def copy_listeners(from_app, to_app):
+    """Copy all registered listeners from one App to another.
+    
+    Slack Bolt stores listeners in internal registries. We need to copy
+    them to our shared app so they respond to events.
+    """
+    # Copy command listeners
+    if hasattr(from_app, '_listeners'):
+        for listener in from_app._listeners:
+            to_app._listeners.append(listener)
+    
+    # Copy from listener_runner if present
+    if hasattr(from_app, '_listener_runner') and hasattr(from_app._listener_runner, 'listeners'):
+        for listener in from_app._listener_runner.listeners:
+            if listener not in to_app._listener_runner.listeners:
+                to_app._listener_runner.listeners.append(listener)
+
+
+def register_research_agent_handlers(shared_app, settings):
+    """Register Research Agent handlers."""
     set_project_path(RESEARCH_AGENT_PATH)
-    cleared = clear_src_modules()
-    logger.debug(f"Cleared {cleared} src.* modules for research-agent")
+    clear_src_modules()
     
-    # Import and patch the app module BEFORE importing handlers
+    # Create a temporary app that handlers will register to
+    temp_app = App(token=settings.slack_bot_token)
+    
+    # Patch the app module to use our temp app
     import src.slack.app as slack_app_module
-    slack_app_module.app = app
+    slack_app_module.app = temp_app
     
-    # Now import handlers - decorators will use our patched app
+    # Import handlers - they register to temp_app via decorators
     from src.slack import commands  # noqa: F401
     from src.slack import interactions  # noqa: F401
     
-    logger.info("✓ Research Agent handlers registered")
+    # Copy registered listeners to shared app
+    copy_listeners(temp_app, shared_app)
+    
+    listener_count = len(temp_app._listeners) if hasattr(temp_app, '_listeners') else 0
+    logger.info(f"✓ Research Agent handlers registered ({listener_count} listeners)")
 
 
-def register_factory_handlers(app):
-    """Register Factory handlers by patching app before import."""
+def register_factory_handlers(shared_app, settings):
+    """Register Factory handlers."""
     set_project_path(FACTORY_PATH)
-    cleared = clear_src_modules()
-    logger.debug(f"Cleared {cleared} src.* modules for factory")
+    clear_src_modules()
     
-    # Import and patch the app module BEFORE importing handlers
+    # Create a temporary app that handlers will register to
+    temp_app = App(token=settings.slack_bot_token)
+    
+    # Patch the app module to use our temp app
     import src.slack.app as slack_app_module
-    slack_app_module.app = app
+    slack_app_module.app = temp_app
     
-    # Now import handlers - decorators will use our patched app
+    # Import handlers - they register to temp_app via decorators
     from src.slack import commands  # noqa: F401
     from src.slack import interactions  # noqa: F401
     
-    logger.info("✓ Factory handlers registered")
+    # Copy registered listeners to shared app
+    copy_listeners(temp_app, shared_app)
+    
+    listener_count = len(temp_app._listeners) if hasattr(temp_app, '_listeners') else 0
+    logger.info(f"✓ Factory handlers registered ({listener_count} listeners)")
 
 
 def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
     set_project_path(FACTORY_PATH)
-    cleared = clear_src_modules()
-    logger.debug(f"Cleared {cleared} src.* modules for API server")
+    clear_src_modules()
     
     from src.api.server import start_server
     
@@ -128,9 +151,6 @@ def main():
     logger.info("=" * 60)
     logger.info("Vineyard Bot - Unified Research Agent + Factory")
     logger.info("=" * 60)
-    logger.debug(f"BASE_DIR: {BASE_DIR}")
-    logger.debug(f"RESEARCH_AGENT_PATH: {RESEARCH_AGENT_PATH}")
-    logger.debug(f"FACTORY_PATH: {FACTORY_PATH}")
 
     try:
         # Get settings (uses factory's config)
@@ -145,8 +165,12 @@ def main():
         app = create_shared_app(settings)
 
         # Register handlers from both systems
-        register_research_agent_handlers(app)
-        register_factory_handlers(app)
+        register_research_agent_handlers(app, settings)
+        register_factory_handlers(app, settings)
+        
+        # Log total listeners
+        total_listeners = len(app._listeners) if hasattr(app, '_listeners') else 0
+        logger.info(f"Total listeners registered: {total_listeners}")
 
         if args.mode == "all":
             logger.info("Starting API server in background...")
