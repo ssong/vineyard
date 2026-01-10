@@ -3,7 +3,7 @@
 This module creates a single Slack App instance shared by both systems,
 reducing resource usage and ensuring consistent bot behavior.
 
-IMPORTANT: This script expects PYTHONPATH to include both subdirectories:
+IMPORTANT: In Docker, PYTHONPATH must include both subdirectories:
   PYTHONPATH=/app:/app/research-agent:/app/factory
 """
 
@@ -27,26 +27,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-def setup_paths():
-    """Add subdirectories to Python path if not already set via PYTHONPATH."""
-    base = os.path.dirname(os.path.abspath(__file__))
-    
-    research_path = os.path.join(base, "research-agent")
-    factory_path = os.path.join(base, "factory")
-    
-    if research_path not in sys.path:
-        sys.path.insert(0, research_path)
-    if factory_path not in sys.path:
-        sys.path.insert(0, factory_path)
+# Compute paths once at module level
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+RESEARCH_AGENT_PATH = os.path.join(BASE_DIR, "research-agent")
+FACTORY_PATH = os.path.join(BASE_DIR, "factory")
 
 
-def get_settings():
-    """Load settings from factory config.
+def ensure_paths():
+    """Ensure both project paths are in sys.path.
     
-    Factory settings include all required vars (Slack, Anthropic, Linear, etc.)
+    This is a fallback for local development - in Docker, PYTHONPATH handles this.
     """
-    # Import from factory's src.config (works because factory/ is in PYTHONPATH)
+    for path in [RESEARCH_AGENT_PATH, FACTORY_PATH]:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+            logger.debug(f"Added to sys.path: {path}")
+
+
+def get_factory_settings():
+    """Load settings from factory config."""
+    ensure_paths()
+    # Push factory to front of path for this import
+    if FACTORY_PATH in sys.path:
+        sys.path.remove(FACTORY_PATH)
+    sys.path.insert(0, FACTORY_PATH)
+    
     from src.config import settings
     return settings
 
@@ -56,41 +61,47 @@ def create_shared_app(settings):
     return App(token=settings.slack_bot_token)
 
 
-def patch_and_register_research_agent(app):
-    """Patch research-agent's app module and register handlers.
+def patch_and_register_handlers(app, project_path, project_name):
+    """Patch a project's app module and register its handlers.
     
-    We need to patch the app module BEFORE importing handlers,
-    because handlers use @app.command() decorators that register on import.
+    Temporarily prioritizes the project path, then imports handlers.
     """
-    # Temporarily switch to research-agent context
-    import src.slack.app as slack_app_module
-    original_app = getattr(slack_app_module, 'app', None)
-    slack_app_module.app = app
+    ensure_paths()
     
-    # Now import handlers - they'll register with our shared app
-    from src.slack import commands  # noqa: F401
-    from src.slack import interactions  # noqa: F401
+    # Put this project's path first
+    if project_path in sys.path:
+        sys.path.remove(project_path)
+    sys.path.insert(0, project_path)
     
-    logger.info("✓ Research Agent handlers registered")
-
-
-def patch_and_register_factory(app):
-    """Patch factory's app module and register handlers."""
+    # Patch the app module
     import src.slack.app as slack_app_module
     slack_app_module.app = app
     
-    from src.slack import commands  # noqa: F401
-    from src.slack import interactions  # noqa: F401
+    # Import handlers (they register via decorators)
+    # Need to reload if already imported
+    import importlib
+    importlib.invalidate_caches()
     
-    logger.info("✓ Factory handlers registered")
+    from src.slack import commands
+    from src.slack import interactions
+    
+    # Force reload to ensure decorators run with our app
+    importlib.reload(commands)
+    importlib.reload(interactions)
+    
+    logger.info(f"✓ {project_name} handlers registered")
 
 
-def start_api_server(settings, factory_path):
+def start_api_server(settings):
     """Start the Factory API server for Linear webhooks."""
-    # Ensure factory is in path (thread may have different context)
-    import sys
-    if factory_path not in sys.path:
-        sys.path.insert(0, factory_path)
+    # Ensure factory is in path
+    if FACTORY_PATH not in sys.path:
+        sys.path.insert(0, FACTORY_PATH)
+    
+    # Make sure factory is first for this import
+    if FACTORY_PATH in sys.path:
+        sys.path.remove(FACTORY_PATH)
+    sys.path.insert(0, FACTORY_PATH)
     
     from src.api.server import start_server
     
@@ -109,16 +120,14 @@ def main():
     )
     args = parser.parse_args()
 
-    # Ensure paths are set up for local development
-    setup_paths()
-
     logger.info("=" * 60)
     logger.info("Vineyard Bot - Unified Research Agent + Factory")
     logger.info("=" * 60)
+    logger.debug(f"sys.path: {sys.path[:5]}")
 
     try:
-        # Get settings (uses factory's config since it has everything)
-        settings = get_settings()
+        # Get settings (uses factory's config)
+        settings = get_factory_settings()
 
         if args.mode == "api":
             logger.info("Running in API-only mode")
@@ -129,26 +138,14 @@ def main():
         app = create_shared_app(settings)
 
         # Register handlers from both systems
-        # Research agent first (temporarily adjust path priority)
-        research_path = os.path.join(os.path.dirname(__file__), "research-agent")
-        factory_path = os.path.join(os.path.dirname(__file__), "factory")
-        
-        # Register research-agent handlers
-        if research_path in sys.path:
-            sys.path.remove(research_path)
-        sys.path.insert(0, research_path)
-        patch_and_register_research_agent(app)
-        
-        # Register factory handlers  
-        sys.path.remove(research_path)
-        sys.path.insert(0, factory_path)
-        patch_and_register_factory(app)
+        patch_and_register_handlers(app, RESEARCH_AGENT_PATH, "Research Agent")
+        patch_and_register_handlers(app, FACTORY_PATH, "Factory")
 
         if args.mode == "all":
             logger.info("Starting API server in background...")
             api_thread = threading.Thread(
                 target=start_api_server,
-                args=(settings, factory_path),
+                args=(settings,),
                 daemon=True
             )
             api_thread.start()
