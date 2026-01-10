@@ -232,21 +232,31 @@ def find_execution_for_issue(issue_id: str) -> Optional[str]:
 
     Searches through all factory states to find one that references this issue.
     """
-    for state_summary in list_states():
-        state = load_state(state_summary.get("execution_id", ""))
+    all_states = list_states()
+    logger.debug(f"Searching {len(all_states)} states for issue {issue_id}")
+
+    for state_summary in all_states:
+        exec_id = state_summary.get("execution_id", "")
+        state = load_state(exec_id)
         if not state:
+            logger.debug(f"Could not load state for {exec_id}")
             continue
 
         # Check if this issue is in the phase issues
         for phase_name, phase_info in state.linear_phase_issues.items():
-            if phase_info.get("id") == issue_id:
+            phase_issue_id = phase_info.get("id") if isinstance(phase_info, dict) else None
+            logger.debug(f"Checking phase {phase_name}: {phase_issue_id} vs {issue_id}")
+            if phase_issue_id == issue_id:
+                logger.info(f"Found execution {exec_id} for issue {issue_id} in phase {phase_name}")
                 return state.execution_id
 
         # Check if this issue is in the work items
         for phase_name, issue_ids in state.linear_issues.items():
             if issue_id in issue_ids:
+                logger.info(f"Found execution {exec_id} for issue {issue_id} in work items")
                 return state.execution_id
 
+    logger.warning(f"No execution found for issue {issue_id}. Checked {len(all_states)} states.")
     return None
 
 

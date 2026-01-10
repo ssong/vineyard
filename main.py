@@ -163,15 +163,23 @@ def register_unified_command_handler(shared_app):
         elif subcommand.startswith("build"):
             # Route to factory
             _handle_factory_build(respond, command, shared_app)
+        elif subcommand.startswith("resume"):
+            # Resume a failed factory run
+            _handle_factory_resume(respond, command, shared_app)
         elif subcommand == "list" or subcommand == "projects":
             # List Linear projects
             _handle_list_projects(respond, shared_app)
+        elif subcommand == "status" or subcommand == "runs":
+            # List factory runs
+            _handle_list_runs(respond, shared_app)
         elif subcommand == "help":
             respond(
                 text="*Vineyard Commands*\n"
                 "• `/vineyard new` - Start a new research cycle\n"
                 "• `/vineyard list` - List available Linear projects\n"
                 "• `/vineyard build [project-id]` - Start factory for a project\n"
+                "• `/vineyard status` - List factory runs and their status\n"
+                "• `/vineyard resume [execution-id]` - Resume a failed factory run\n"
                 "• `/vineyard help` - Show this help message"
             )
         else:
@@ -180,6 +188,166 @@ def register_unified_command_handler(shared_app):
             )
 
     logger.info("✓ Unified /vineyard command handler registered")
+
+
+def _handle_list_runs(respond: Respond, shared_app: App):
+    """Handle /vineyard status - shows factory runs."""
+    set_project_path(FACTORY_PATH)
+    clear_src_modules()
+    inject_app_module(FACTORY_PATH, shared_app)
+
+    try:
+        from src.orchestrator.persistence import list_states
+
+        states = list_states()
+
+        if not states:
+            respond(
+                text="No factory runs found.\n\n"
+                "_Use `/vineyard build [project-id]` to start a new factory run._"
+            )
+            return
+
+        lines = ["*Factory Runs*\n"]
+
+        for state in states[:10]:  # Limit to 10 most recent
+            exec_id = state.get("execution_id", "")
+            phase = state.get("current_phase", "unknown")
+            status = state.get("status", "unknown")
+            name = state.get("opportunity_name", "Unknown")
+
+            # Status emoji
+            status_emoji = {
+                "pending": "⏳",
+                "in_progress": "🔄",
+                "completed": "✅",
+                "failed": "❌",
+                "awaiting_approval": "⏸️",
+            }.get(status, "📋")
+
+            lines.append(f"{status_emoji} *{name}*")
+            lines.append(f"   Phase: `{phase}` | Status: `{status}`")
+            lines.append(f"   ID: `{exec_id}`")
+            lines.append("")
+
+        if len(states) > 10:
+            lines.append(f"_...and {len(states) - 10} more runs_")
+
+        lines.append("_Use `/vineyard resume [execution-id]` to resume a failed run_")
+
+        respond(text="\n".join(lines))
+
+    except Exception as e:
+        logger.exception("Failed to list runs")
+        respond(text=f"❌ Failed to list runs: {str(e)}")
+
+
+def _handle_factory_resume(respond: Respond, command: dict, shared_app: App):
+    """Handle /vineyard resume - resumes a failed factory run."""
+    set_project_path(FACTORY_PATH)
+    clear_src_modules()
+    inject_app_module(FACTORY_PATH, shared_app)
+
+    text = command.get("text", "").strip()
+    parts = text.split()
+
+    execution_id = parts[1] if len(parts) > 1 else None
+    channel_id = command["channel_id"]
+
+    if not execution_id:
+        # Show list of failed runs that can be resumed
+        try:
+            from src.orchestrator.persistence import list_states
+
+            failed_states = [s for s in list_states() if s.get("status") == "failed"]
+
+            if not failed_states:
+                respond(
+                    text="No failed runs to resume.\n\n"
+                    "_Use `/vineyard status` to see all factory runs._"
+                )
+                return
+
+            lines = ["Please provide an execution ID: `/vineyard resume [execution-id]`\n"]
+            lines.append("*Failed runs that can be resumed:*\n")
+
+            for state in failed_states[:5]:
+                exec_id = state.get("execution_id", "")
+                name = state.get("opportunity_name", "Unknown")
+                phase = state.get("current_phase", "unknown")
+                lines.append(f"• *{name}* - failed at `{phase}`")
+                lines.append(f"  ID: `{exec_id}`")
+
+            respond(text="\n".join(lines))
+            return
+
+        except Exception as e:
+            respond(
+                text="Please provide an execution ID: `/vineyard resume [execution-id]`\n\n"
+                "_Use `/vineyard status` to see all factory runs._"
+            )
+            return
+
+    respond(
+        text=f"🔄 *Resuming factory run*\n"
+        f"Execution ID: `{execution_id[:8]}...`\n"
+        "_Attempting to resume from last failed phase..._"
+    )
+
+    try:
+        from src.orchestrator.runner import resume_factory
+        from src.orchestrator.persistence import load_state
+
+        # Validate execution exists
+        state = load_state(execution_id)
+        if not state:
+            shared_app.client.chat_postMessage(
+                channel=channel_id,
+                text=f"❌ Execution not found: `{execution_id}`\n\n"
+                "_Use `/vineyard status` to see available runs._"
+            )
+            return
+
+        # Resume the factory
+        updated_state = resume_factory(execution_id)
+
+        if updated_state:
+            phase_name = updated_state.current_phase.value.replace("_", " ").title()
+            status = updated_state.phase_statuses.get(updated_state.current_phase.value)
+
+            if updated_state.completed_at:
+                shared_app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"✅ *Factory run complete!*\n\n"
+                    f"Project: {updated_state.handoff.opportunity.name}\n"
+                    f"Linear: <{updated_state.handoff.linear_project_url}|View in Linear>"
+                )
+            elif status and status.value == "failed":
+                shared_app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"❌ *Factory failed again at {phase_name}*\n\n"
+                    f"Check Linear for error details.\n"
+                    f"Use `/vineyard resume {execution_id}` to try again."
+                )
+            else:
+                shared_app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=f"🔄 *Factory resumed*\n\n"
+                    f"Current phase: *{phase_name}*\n"
+                    f"Status: `{status.value if status else 'unknown'}`"
+                )
+        else:
+            shared_app.client.chat_postMessage(
+                channel=channel_id,
+                text="❌ Failed to resume factory. Check logs for details."
+            )
+
+    except Exception as e:
+        logger.exception("Failed to resume factory")
+        shared_app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ Failed to resume: {str(e)}"
+        )
 
 
 def _handle_list_projects(respond: Respond, shared_app: App):
