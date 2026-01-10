@@ -28,22 +28,32 @@ chmod 755 outputs state
 # 5. Build the Docker image
 docker build -t vineyard .
 
-# 6. Run the container (with host Redis access)
+# 6. Create Docker network for container communication
+docker network create vineyard-net 2>/dev/null || true
+
+# 7. Start Redis container
+docker run -d \
+  --name vineyard-redis \
+  --network vineyard-net \
+  --restart unless-stopped \
+  redis:7-alpine
+
+# 8. Run the Vineyard bot
 docker run -d \
   --name vineyard \
+  --network vineyard-net \
   --restart unless-stopped \
-  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
-  -e REDIS_URL=redis://host.docker.internal:6379 \
+  -e REDIS_URL=redis://vineyard-redis:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
   vineyard
 
-# 7. Check it's running
+# 9. Check it's running
 docker logs -f vineyard
 
-# 8. Verify health check
+# 10. Verify health check
 curl http://localhost:8000/health
 ```
 
@@ -66,14 +76,19 @@ docker build --no-cache -t vineyard .
 
 ### Running the Container
 
-**Full deployment (Slack bot + API server + Redis on host):**
+**Full deployment (Slack bot + API server + Redis):**
 ```bash
+# Create network and start Redis (if not already running)
+docker network create vineyard-net 2>/dev/null || true
+docker run -d --name vineyard-redis --network vineyard-net --restart unless-stopped redis:7-alpine 2>/dev/null || true
+
+# Start Vineyard bot
 docker run -d \
   --name vineyard \
+  --network vineyard-net \
   --restart unless-stopped \
-  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
-  -e REDIS_URL=redis://host.docker.internal:6379 \
+  -e REDIS_URL=redis://vineyard-redis:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \
@@ -183,12 +198,14 @@ docker run -d \
 git pull && \
 docker build -t vineyard . && \
 docker rm -f vineyard && \
+docker network create vineyard-net 2>/dev/null || true && \
+docker run -d --name vineyard-redis --network vineyard-net --restart unless-stopped redis:7-alpine 2>/dev/null || true && \
 docker run -d \
   --name vineyard \
+  --network vineyard-net \
   --restart unless-stopped \
-  --add-host=host.docker.internal:host-gateway \
   --env-file .env \
-  -e REDIS_URL=redis://host.docker.internal:6379 \
+  -e REDIS_URL=redis://vineyard-redis:6379 \
   -v $(pwd)/outputs:/app/outputs \
   -v $(pwd)/state:/app/state \
   -p 8000:8000 \

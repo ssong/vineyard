@@ -73,23 +73,49 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, custom_rate_limit_handler)
     
-    # Add ConnectionError handler to prevent slowapi crashes
+    # Add handlers for connection issues to prevent slowapi crashes
     @app.exception_handler(ConnectionError)
     async def connection_error_handler(request: Request, exc: ConnectionError):
         logger.warning(f"Connection error in request: {exc}")
-        # Continue processing - don't let connection errors break requests
         return JSONResponse(
             status_code=503,
             content={"detail": "Service temporarily unavailable"}
         )
     
-    # Only add rate limit middleware if storage is working
-    # The middleware can crash if Redis isn't available
+    @app.exception_handler(TimeoutError)
+    async def timeout_error_handler(request: Request, exc: TimeoutError):
+        logger.warning(f"Timeout error in request: {exc}")
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "Gateway timeout"}
+        )
+    
+    @app.exception_handler(OSError)
+    async def os_error_handler(request: Request, exc: OSError):
+        logger.warning(f"OS error in request: {exc}")
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service temporarily unavailable"}
+        )
+    
+    # Test Redis connection before enabling middleware
+    redis_available = False
     if REDIS_URL:
+        try:
+            import redis
+            r = redis.from_url(REDIS_URL, socket_timeout=2)
+            r.ping()
+            redis_available = True
+            logger.info("Redis connection verified for rate limiting")
+        except Exception as e:
+            logger.warning(f"Redis not available for rate limiting: {e}")
+    
+    # Only add rate limit middleware if Redis is actually working
+    if redis_available:
         app.add_middleware(SlowAPIMiddleware)
         logger.info("Rate limiting middleware enabled (Redis storage)")
     else:
-        logger.info("Rate limiting middleware disabled (no Redis - using decorators only)")
+        logger.info("Rate limiting middleware disabled (Redis not available)")
 
     # Import and include routers
     from src.api.webhooks import router as webhooks_router
