@@ -46,7 +46,8 @@ def _register_output_types():
         "research_enrichment": ResearchEnrichmentOutput,
         "design": DesignOutput,
         "spec": SpecOutput,
-        "build": BuildOutput,
+        # Note: "build" is excluded because it stores a composite dict {"code": {...}, "test": {...}, ...}
+        # rather than a BuildOutput dataclass. Access via build.get("code", {}).get("files", [])
         "launch_prep": LaunchPrepOutput,
         "launch": LaunchOutput,
         "growth": GrowthOutput,

@@ -24,7 +24,9 @@ class SecurityAgent(BaseAgent):
         prefs = state.handoff.build_preferences
         build = self.get_previous_output(state, "build")
 
-        files = build.get("files", []) if build else []
+        # BUILD phase stores composite output: {"code": {...}, "test": {...}, ...}
+        code_output = build.get("code", {}) if isinstance(build, dict) else {}
+        files = code_output.get("files", []) if code_output else []
 
         # Perform code security analysis
         code_issues = self._analyze_code_security(files)

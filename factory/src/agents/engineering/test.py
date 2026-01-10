@@ -32,8 +32,10 @@ class TestAgent(BaseAgent):
         build = self.get_previous_output(state, "build")
 
         # Initialize context with existing source files from build phase
+        # BUILD phase stores composite output: {"code": {...}, "test": {...}, ...}
         ctx = GenerationContext()
-        source_files = build.get("files", []) if build else []
+        code_output = build.get("code", {}) if isinstance(build, dict) else {}
+        source_files = code_output.get("files", []) if code_output else []
 
         # Add source files to context for reference
         for f in source_files:
