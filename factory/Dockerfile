@@ -17,6 +17,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install curl for healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
@@ -31,10 +35,18 @@ RUN useradd --create-home --shell /bin/bash vineyard && \
 
 USER vineyard
 
+# Expose API port for webhooks
+EXPOSE 8000
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f "python -m src.main" || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
+# Default: run both Slack bot and API server
 CMD ["python", "-m", "src.main"]
+
+# Alternative modes:
+# API only: CMD ["python", "-m", "src.main", "--mode", "api"]
+# Slack only: CMD ["python", "-m", "src.main", "--mode", "slack"]

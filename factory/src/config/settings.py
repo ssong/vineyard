@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     # Linear
     linear_api_key: str = ""
+    linear_webhook_secret: str = ""  # For verifying webhook signatures
+
+    # API Server
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
 
     # Miro (optional)
     miro_access_token: str = ""
