@@ -573,6 +573,8 @@ async def handle_comment_created(
     background_tasks: BackgroundTasks,
 ):
     """Handle new comment on an issue."""
+    from datetime import datetime, timezone
+
     data = payload.data
     body = data.get("body", "")
     issue = data.get("issue", {})
@@ -588,6 +590,22 @@ async def handle_comment_created(
     if not is_authorized_commenter(commenter_name):
         logger.debug(f"Ignoring comment from unauthorized user: {commenter_name}")
         return
+
+    # Only process recent comments (within last 5 seconds) to avoid processing old comments
+    # This prevents loops when Linear sends webhooks for comment history
+    comment_created_at = data.get("createdAt")
+    if comment_created_at:
+        try:
+            # Parse ISO timestamp (e.g., "2024-01-10T19:29:29.151Z")
+            created_time = datetime.fromisoformat(comment_created_at.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            age_seconds = (now - created_time).total_seconds()
+
+            if age_seconds > 5:
+                logger.debug(f"Ignoring old comment (age={age_seconds:.1f}s): {body[:30]}...")
+                return
+        except Exception as e:
+            logger.warning(f"Failed to parse comment timestamp: {e}")
 
     # Check for approval keywords first (checkpoint approval)
     if should_approve(body):
