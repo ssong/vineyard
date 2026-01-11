@@ -172,10 +172,14 @@ def register_unified_command_handler(shared_app):
         elif subcommand == "status" or subcommand == "runs":
             # List factory runs
             _handle_list_runs(respond, shared_app)
+        elif subcommand == "history":
+            # Show all research opportunities with status
+            _handle_history(respond, shared_app)
         elif subcommand == "help":
             respond(
                 text="*Vineyard Commands*\n"
                 "• `/vineyard new` - Start a new research cycle\n"
+                "• `/vineyard history` - Show all opportunities with status\n"
                 "• `/vineyard list` - List available Linear projects\n"
                 "• `/vineyard build [project-id]` - Start factory for a project\n"
                 "• `/vineyard status` - List factory runs and their status\n"
@@ -240,6 +244,76 @@ def _handle_list_runs(respond: Respond, shared_app: App):
     except Exception as e:
         logger.exception("Failed to list runs")
         respond(text=f"❌ Failed to list runs: {str(e)}")
+
+
+def _handle_history(respond: Respond, shared_app: App):
+    """Handle /vineyard history - shows all research opportunities with status."""
+    from datetime import datetime
+
+    set_project_path(RESEARCH_AGENT_PATH)
+    clear_src_modules()
+    inject_app_module(RESEARCH_AGENT_PATH, shared_app)
+
+    try:
+        from src.persistence import list_opportunities
+
+        opportunities = list_opportunities(limit=50)
+
+        if not opportunities:
+            respond(
+                text="📭 No opportunities found yet.\n\nRun `/vineyard new` to discover opportunities."
+            )
+            return
+
+        # Build table header
+        lines = [
+            "*📊 Opportunity History*\n",
+            "```",
+            f"{'Status':<10} {'Score':<6} {'Name':<35} {'Date':<12}",
+            f"{'-'*10} {'-'*6} {'-'*35} {'-'*12}",
+        ]
+
+        for opp in opportunities:
+            # Map status to display
+            status = opp.get("status", "pending")
+            if status == "selected":
+                status_display = "✅ Accept"
+            elif status == "rejected":
+                status_display = "❌ Reject"
+            else:
+                status_display = "⏳ Pending"
+
+            score = opp.get("score", 0)
+            name = opp.get("name", "Unknown")[:35]
+
+            # Format created_at
+            created = opp.get("created_at", "")
+            if created:
+                try:
+                    created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    date_str = created_dt.strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = ""
+            else:
+                date_str = ""
+
+            lines.append(f"{status_display:<10} {score:<6} {name:<35} {date_str:<12}")
+
+        lines.append("```")
+
+        # Add summary
+        total = len(opportunities)
+        accepted = sum(1 for o in opportunities if o.get("status") == "selected")
+        rejected = sum(1 for o in opportunities if o.get("status") == "rejected")
+        pending = total - accepted - rejected
+
+        lines.append(f"\n_Total: {total} | ✅ {accepted} accepted | ❌ {rejected} rejected | ⏳ {pending} pending_")
+
+        respond(text="\n".join(lines))
+
+    except Exception as e:
+        logger.exception("Failed to list opportunity history")
+        respond(text=f"❌ Failed to list history: {str(e)}")
 
 
 def _handle_factory_resume(respond: Respond, command: dict, shared_app: App):
@@ -471,7 +545,7 @@ def _post_research_results(channel_id: str, user_id: str, report, pdf_path: str,
         {"type": "divider"},
     ]
 
-    for i, opp_report in enumerate(report.opportunities[:3], 1):
+    for i, opp_report in enumerate(report.opportunities[:5], 1):
         opp = opp_report.opportunity
         forecast = opp_report.forecast
 
@@ -502,13 +576,29 @@ def _post_research_results(channel_id: str, user_id: str, report, pdf_path: str,
             ]
         )
 
+    # Add Reject All button
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ Reject All", "emoji": True},
+                    "value": report.report_id,
+                    "action_id": "reject_all_opportunities",
+                    "style": "danger",
+                }
+            ],
+        }
+    )
+
     blocks.append(
         {
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"_Research completed in {report.research_duration_seconds}s. Reply with a number (1-3) to select._",
+                    "text": f"_Research completed in {report.research_duration_seconds}s._",
                 }
             ],
         }
