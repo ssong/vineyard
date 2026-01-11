@@ -45,7 +45,7 @@ class DevOpsAgent(BaseAgent):
         all_files = dockerfile + compose + ci_cd + deploy_config + env_setup + monitoring
 
         # Push to GitHub
-        self._push_to_github(opp, all_files)
+        self._push_to_github(state, all_files)
 
         # Note: Linear task tracking is now handled at the runner level
 
@@ -312,16 +312,37 @@ Include:
             self.logger.error(f"Failed to generate monitoring: {e}")
             return []
 
-    def _push_to_github(self, opp, files: list[GeneratedFile]):
+    def _push_to_github(self, state: FactoryState, files: list[GeneratedFile]):
         """Push infrastructure files to GitHub."""
+        if not state.github_repo:
+            self.logger.error("No GitHub repo info available - CodeAgent must run first")
+            raise RuntimeError("No GitHub repo info available")
+
+        repo_info = state.github_repo
+        if not repo_info.get("owner") or not repo_info.get("name"):
+            self.logger.error("GitHub repo info incomplete - missing owner or name")
+            raise RuntimeError("GitHub repo info incomplete")
+
         try:
             file_data = [
                 {"path": f.path, "content": f.content, "message": f"Add {f.path}"}
                 for f in files
             ]
 
-            github.create_files_batch("", opp.slug, file_data)
+            created = github.create_files_batch(
+                repo_info["owner"],
+                repo_info["name"],
+                file_data
+            )
+
+            # Verify files were pushed
+            if len(created) != len(files):
+                failed = [f.path for f in files if f.path not in created]
+                self.logger.warning(f"Failed to push {len(failed)} devops files: {failed[:5]}")
+
+            self.logger.info(f"Successfully pushed {len(created)} devops files to GitHub")
 
         except Exception as e:
             self.logger.error(f"Failed to push to GitHub: {e}")
+            raise RuntimeError(f"Failed to push devops files to GitHub: {e}")
 

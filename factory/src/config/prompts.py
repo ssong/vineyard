@@ -31,6 +31,7 @@ CODE_AGENT_PROMPT = _load_prompt("code_agent.md")
 TEST_AGENT_PROMPT = _load_prompt("test_agent.md")
 SECURITY_AGENT_PROMPT = _load_prompt("security_agent.md")
 DEVOPS_AGENT_PROMPT = _load_prompt("devops_agent.md")
+QA_AGENT_PROMPT = _load_prompt("qa_agent.md")
 
 # =============================================================================
 # GTM DOMAIN PROMPTS

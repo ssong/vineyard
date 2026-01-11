@@ -153,6 +153,8 @@ class FactoryState:
     completed_at: Optional[datetime] = None
     # Slack channels created for this opportunity
     slack_channels: dict[str, str] = field(default_factory=dict)
+    # GitHub repository info (set by CodeAgent, used by TestAgent, DevOpsAgent, QAAgent)
+    github_repo: Optional[dict[str, str]] = None
 
     def update_phase_status(self, phase: Phase, status: PhaseStatus):
         """

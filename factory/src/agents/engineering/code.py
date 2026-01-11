@@ -78,14 +78,16 @@ class CodeAgent(BaseAgent):
         self.logger.info(f"Generated {len(all_files)} unique files")
 
         # Create GitHub repository
-        repo_url = self._create_github_repo(opp, all_files)
+        repo_info = self._create_github_repo(opp, all_files)
 
         # Note: Linear task tracking is now handled at the runner level
         # via upfront task creation and status updates
 
         output = {
             "files": all_files,
-            "github_repo_url": repo_url,
+            "github_repo_url": repo_info.get("url", ""),
+            "github_owner": repo_info.get("owner", ""),
+            "github_repo_name": repo_info.get("name", ""),
             "file_count": len(all_files),
             "folder_structure": ctx.get_folder_structure(),
         }
@@ -585,8 +587,12 @@ Do NOT create files that already exist in the project structure above.
         except Exception as e:
             self.logger.error(f"Failed to generate utilities: {e}")
 
-    def _create_github_repo(self, opp, files: list[GeneratedFile]) -> str:
-        """Create GitHub repository with generated files."""
+    def _create_github_repo(self, opp, files: list[GeneratedFile]) -> dict[str, str]:
+        """Create GitHub repository with generated files.
+
+        Returns:
+            Dict with owner, name, and url keys.
+        """
         try:
             repo = github.create_repository(
                 name=opp.slug,
@@ -595,7 +601,7 @@ Do NOT create files that already exist in the project structure above.
             )
 
             if not repo:
-                return ""
+                return {"owner": "", "name": "", "url": ""}
 
             owner = repo.get("owner", {}).get("login", "")
             repo_name = repo.get("name", opp.slug)
@@ -608,9 +614,13 @@ Do NOT create files that already exist in the project structure above.
 
             github.create_files_batch(owner, repo_name, file_data)
 
-            return repo.get("html_url", "")
+            return {
+                "owner": owner,
+                "name": repo_name,
+                "url": repo.get("html_url", ""),
+            }
 
         except Exception as e:
             self.logger.error(f"Failed to create GitHub repo: {e}")
-            return ""
+            return {"owner": "", "name": "", "url": ""}
 

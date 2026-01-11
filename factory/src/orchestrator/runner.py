@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from src.agents.engineering import CodeAgent, DevOpsAgent, SecurityAgent, TestAgent
+from src.agents.engineering import CodeAgent, DevOpsAgent, QAAgent, SecurityAgent, TestAgent
 from src.agents.gtm import GrowthAgent, LaunchAgent, MarketingAgent, SupportAgent
 from src.agents.product import DesignAgent, ResearchEnrichmentAgent, SpecAgent
 from src.models import FactoryHandoff, FactoryState, Phase, PhaseStatus
@@ -432,19 +432,41 @@ def _execute_phase(state: FactoryState, phase: Phase) -> dict:
     logger.info(f"Executing phase: {phase.value}")
 
     if phase == Phase.BUILD:
-        # Composite phase: Code → Test → Security → DevOps
+        # Composite phase: Code → QA → Test → Security → DevOps
         outputs = {}
 
+        # 1. Generate code
         code_agent = CodeAgent()
         outputs["code"] = code_agent.run(state)
+
+        # Store github repo info for other agents (TestAgent, DevOpsAgent, QAAgent)
+        code_output = outputs["code"]
+        state.github_repo = {
+            "owner": code_output.get("github_owner", ""),
+            "name": code_output.get("github_repo_name", ""),
+            "url": code_output.get("github_repo_url", ""),
+        }
         state.store_output(Phase.BUILD, outputs)
 
+        # 2. QA validation and auto-remediation (validates deps, structure, pushes fixes)
+        qa_agent = QAAgent()
+        outputs["qa"] = qa_agent.run(state)
+
+        logger.info(
+            f"QA: {len(outputs['qa'].get('issues_found', []))} found, "
+            f"{len(outputs['qa'].get('issues_fixed', []))} fixed, "
+            f"{len(outputs['qa'].get('issues_unfixable', []))} unfixable"
+        )
+
+        # 3. Generate and push tests
         test_agent = TestAgent()
         outputs["test"] = test_agent.run(state)
 
+        # 4. Security scan
         security_agent = SecurityAgent()
         outputs["security"] = security_agent.run(state)
 
+        # 5. DevOps configuration
         devops_agent = DevOpsAgent()
         outputs["devops"] = devops_agent.run(state)
 
