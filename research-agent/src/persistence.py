@@ -321,6 +321,38 @@ def mark_opportunity_selected(opportunity_id: str, project_url: str = "") -> boo
         return False
 
 
+def reject_all_opportunities(report_id: str) -> int:
+    """
+    Reject all pending opportunities from a report.
+
+    Args:
+        report_id: The report ID whose opportunities should be rejected
+
+    Returns:
+        Number of opportunities rejected
+    """
+    try:
+        init_db()
+
+        with _get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE opportunities
+                SET status = 'rejected'
+                WHERE report_id = ? AND status = 'pending'
+            """, (report_id,))
+
+            rejected_count = cursor.rowcount
+            if rejected_count > 0:
+                logger.info(f"Rejected {rejected_count} opportunities from report {report_id}")
+
+            return rejected_count
+
+    except Exception as e:
+        logger.exception(f"Failed to reject opportunities: {e}")
+        return 0
+
+
 def list_opportunities(limit: int = 20, status: Optional[str] = None) -> list[dict]:
     """
     List recent opportunities.

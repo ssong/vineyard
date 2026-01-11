@@ -233,13 +233,29 @@ def post_research_results(channel_id: str, user_id: str, report, pdf_path: str):
             ]
         )
 
+    # Add Reject All button
+    blocks.append(
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "❌ Reject All", "emoji": True},
+                    "value": report.report_id,
+                    "action_id": "reject_all_opportunities",
+                    "style": "danger",
+                }
+            ],
+        }
+    )
+
     blocks.append(
         {
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"_Research completed in {report.research_duration_seconds}s. Reply with a number (1-3) to select._",
+                    "text": f"_Research completed in {report.research_duration_seconds}s._",
                 }
             ],
         }

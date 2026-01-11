@@ -6,7 +6,12 @@ import re
 from slack_bolt import Ack, Respond
 
 from src.linear.client import create_project_for_opportunity
-from src.persistence import save_report as _save_report, load_report as _load_report, mark_opportunity_selected
+from src.persistence import (
+    save_report as _save_report,
+    load_report as _load_report,
+    mark_opportunity_selected,
+    reject_all_opportunities,
+)
 from src.slack.app import app
 
 logger = logging.getLogger(__name__)
@@ -82,6 +87,35 @@ def handle_opportunity_selection(ack: Ack, body: dict, respond: Respond):
         logger.exception("Failed to create Linear project")
         respond(
             text=f"❌ Failed to create Linear project: {str(e)}",
+            replace_original=False,
+        )
+
+
+@app.action("reject_all_opportunities")
+def handle_reject_all(ack: Ack, body: dict, respond: Respond):
+    """Handle reject all button click."""
+    ack()
+
+    action = body["actions"][0]
+    report_id = action["value"]
+    user_id = body["user"]["id"]
+
+    logger.info(f"User {user_id} rejected all opportunities from report {report_id}")
+
+    # Reject all opportunities from this report
+    rejected_count = reject_all_opportunities(report_id)
+
+    if rejected_count > 0:
+        respond(
+            text=(
+                f"❌ *All {rejected_count} opportunities rejected*\n\n"
+                "_Run `/vineyard new` to start a new research cycle._"
+            ),
+            replace_original=True,
+        )
+    else:
+        respond(
+            text="⚠️ No pending opportunities found to reject.",
             replace_original=False,
         )
 
