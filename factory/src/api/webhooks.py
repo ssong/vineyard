@@ -506,7 +506,7 @@ async def handle_approval_request(
 # =============================================================================
 
 @router.post("/linear")
-@limiter.limit("30/minute")  # Stricter limit for webhook endpoint
+@limiter.limit("100/30seconds")  # 100 requests per 30 seconds
 async def linear_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
