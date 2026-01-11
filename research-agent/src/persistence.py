@@ -172,10 +172,11 @@ def load_report(report_id: str):
                 return None
             
             # Reconstruct report from stored data
-            from src.models.report import ResearchReport, OpportunityReport, Recommendation
-            from src.models.opportunity import Opportunity, OpportunityCategory, TargetSegment, BusinessModel
-            from src.models.validation import ValidationResult
-            from src.models.report import RevenueForecast
+            from src.models import (
+                ResearchReport, OpportunityReport, Recommendation, RevenueForecast,
+                Opportunity, OpportunityCategory, TargetSegment, BusinessModel,
+                ValidationResult,
+            )
             
             # Load opportunities for this report
             cursor.execute("""
