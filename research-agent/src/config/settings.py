@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Research settings
     research_timeout_seconds: int = 180
-    max_opportunities: int = 3
+    max_opportunities: int = 5
 
     # Logging
     log_level: str = "INFO"

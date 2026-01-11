@@ -283,20 +283,39 @@ def load_report(report_id: str):
 
 
 def mark_opportunity_selected(opportunity_id: str, project_url: str = "") -> bool:
-    """Mark an opportunity as selected."""
+    """Mark an opportunity as selected and reject siblings from the same report."""
     try:
         init_db()
-        
+
         with _get_db() as conn:
             cursor = conn.cursor()
+
+            # First, get the report_id for this opportunity
+            cursor.execute("SELECT report_id FROM opportunities WHERE id = ?", (opportunity_id,))
+            row = cursor.fetchone()
+            report_id = row["report_id"] if row else None
+
+            # Mark the selected opportunity
             cursor.execute("""
-                UPDATE opportunities 
+                UPDATE opportunities
                 SET status = 'selected', selected_at = ?, project_url = ?
                 WHERE id = ?
             """, (datetime.utcnow().isoformat(), project_url, opportunity_id))
-            
-            return cursor.rowcount > 0
-            
+
+            # Mark sibling opportunities from the same report as rejected
+            if report_id:
+                cursor.execute("""
+                    UPDATE opportunities
+                    SET status = 'rejected'
+                    WHERE report_id = ? AND id != ? AND status = 'pending'
+                """, (report_id, opportunity_id))
+
+                rejected_count = cursor.rowcount
+                if rejected_count > 0:
+                    logger.info(f"Marked {rejected_count} sibling opportunities as rejected")
+
+            return True
+
     except Exception as e:
         logger.exception(f"Failed to mark opportunity selected: {e}")
         return False
@@ -305,10 +324,10 @@ def mark_opportunity_selected(opportunity_id: str, project_url: str = "") -> boo
 def list_opportunities(limit: int = 20, status: Optional[str] = None) -> list[dict]:
     """
     List recent opportunities.
-    
+
     Args:
         limit: Maximum number to return
-        status: Filter by status ('pending', 'selected', or None for all)
+        status: Filter by status ('pending', 'selected', 'rejected', or None for all)
         
     Returns:
         List of opportunity dicts with id, name, score, status, created_at

@@ -27,11 +27,14 @@ def handle_vineyard_command(ack: Ack, respond: Respond, command: dict):
         handle_new_research(respond, command)
     elif subcommand == "list":
         handle_list_opportunities(respond)
+    elif subcommand == "history":
+        handle_history(respond)
     elif subcommand == "help":
         respond(
             text="*Vineyard Commands*\n"
             "• `/vineyard new` - Start a new research cycle\n"
             "• `/vineyard list` - Show recent opportunities\n"
+            "• `/vineyard history` - Show all opportunities with status\n"
             "• `/vineyard help` - Show this help message"
         )
     else:
@@ -83,6 +86,63 @@ def handle_list_opportunities(respond: Respond):
             line += f" <{opp['project_url']}|View>"
         
         lines.append(line)
+
+    respond(text="\n".join(lines))
+
+
+def handle_history(respond: Respond):
+    """Show all opportunities from the database with their status."""
+    opportunities = list_opportunities(limit=50)
+
+    if not opportunities:
+        respond(
+            text="📭 No opportunities found yet.\n\nRun `/vineyard new` to discover opportunities."
+        )
+        return
+
+    # Build table header
+    lines = [
+        "*📊 Opportunity History*\n",
+        "```",
+        f"{'Status':<10} {'Score':<6} {'Name':<35} {'Date':<12}",
+        f"{'-'*10} {'-'*6} {'-'*35} {'-'*12}",
+    ]
+
+    for opp in opportunities:
+        # Map status to display
+        status = opp.get("status", "pending")
+        if status == "selected":
+            status_display = "✅ Accept"
+        elif status == "rejected":
+            status_display = "❌ Reject"
+        else:
+            status_display = "⏳ Pending"
+
+        score = opp.get("score", 0)
+        name = opp.get("name", "Unknown")[:35]
+
+        # Format created_at
+        created = opp.get("created_at", "")
+        if created:
+            try:
+                created_dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                date_str = created_dt.strftime("%Y-%m-%d")
+            except Exception:
+                date_str = ""
+        else:
+            date_str = ""
+
+        lines.append(f"{status_display:<10} {score:<6} {name:<35} {date_str:<12}")
+
+    lines.append("```")
+
+    # Add summary
+    total = len(opportunities)
+    accepted = sum(1 for o in opportunities if o.get("status") == "selected")
+    rejected = sum(1 for o in opportunities if o.get("status") == "rejected")
+    pending = total - accepted - rejected
+
+    lines.append(f"\n_Total: {total} | ✅ {accepted} accepted | ❌ {rejected} rejected | ⏳ {pending} pending_")
 
     respond(text="\n".join(lines))
 
@@ -142,7 +202,7 @@ def post_research_results(channel_id: str, user_id: str, report, pdf_path: str):
         {"type": "divider"},
     ]
 
-    for i, opp_report in enumerate(report.opportunities[:3], 1):
+    for i, opp_report in enumerate(report.opportunities[:5], 1):
         opp = opp_report.opportunity
         forecast = opp_report.forecast
 
