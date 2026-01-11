@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from src.agents.base import BaseAgent
+from src.config import settings
 from src.config.prompts import QA_AGENT_PROMPT
 from src.models import FactoryState, GeneratedFile
 from src.tools import github, linear, llm
@@ -30,6 +31,11 @@ class IssueType(str, Enum):
     IMPORT_MISMATCH = "import_mismatch"
     AUTH_INCONSISTENCY = "auth_inconsistency"
     BUILD_ERROR = "build_error"
+    TYPECHECK_ERROR = "typecheck_error"
+    LINT_ERROR = "lint_error"
+    TEST_FAILURE = "test_failure"
+    MISSING_PAGE = "missing_page"
+    MISSING_WEBHOOK_HANDLER = "missing_webhook_handler"
     PUSH_FAILED = "push_failed"
     DECISION_REQUIRED = "decision_required"
 
@@ -188,6 +194,18 @@ class QAAgent(BaseAgent):
                 lambda: self._fix_auth_consistency(files_dict, state)
             )
 
+            self._run_validation_with_tracking(
+                "page_reference_check",
+                "Verify referenced pages exist",
+                lambda: self._verify_page_references(files_dict, state)
+            )
+
+            self._run_validation_with_tracking(
+                "webhook_handler_check",
+                "Verify webhook handlers exist",
+                lambda: self._verify_webhook_handlers(files_dict, state)
+            )
+
             # Push fixes to GitHub
             if self.files_modified:
                 self._run_validation_with_tracking(
@@ -196,11 +214,11 @@ class QAAgent(BaseAgent):
                     lambda: self._push_fixes_to_github(files_dict, repo_info)
                 )
 
-            # Verify build
+            # Clone, verify build, run full validation suite
             self._run_validation_with_tracking(
-                "verify_build",
-                "Verify build passes",
-                lambda: self._verify_build(repo_info, state)
+                "full_build_validation",
+                "Clone and validate build (audit, typecheck, lint, test)",
+                lambda: self._full_build_validation(repo_info, files_dict, state)
             )
 
             # Complete QA task
@@ -756,6 +774,14 @@ Please review and address the issues above.
                 "severity": IssueSeverity.WARNING,
                 "description": "Custom 404 page",
             },
+            "app/loading.tsx": {
+                "severity": IssueSeverity.WARNING,
+                "description": "Loading UI for route transitions",
+            },
+            "app/global-error.tsx": {
+                "severity": IssueSeverity.WARNING,
+                "description": "Root-level error boundary",
+            },
             "middleware.ts": {
                 "severity": IssueSeverity.MEDIUM,
                 "description": "Auth middleware for route protection",
@@ -879,6 +905,44 @@ export default function NotFound() {
   );
 }
 ''',
+            "app/loading.tsx": '''export default function Loading() {
+  return (
+    <div className="flex min-h-screen items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-500" />
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    </div>
+  );
+}
+''',
+            "app/global-error.tsx": """'use client';
+
+export default function GlobalError({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string };
+  reset: () => void;
+}) {
+  return (
+    <html>
+      <body>
+        <div className="flex min-h-screen flex-col items-center justify-center">
+          <h2 className="text-2xl font-bold mb-4">Something went wrong!</h2>
+          <p className="text-gray-600 mb-4">A critical error occurred</p>
+          <button
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            onClick={() => reset()}
+          >
+            Try again
+          </button>
+        </div>
+      </body>
+    </html>
+  );
+}
+""",
             "middleware.ts": self._generate_middleware(prefs),
         }
 
@@ -1109,42 +1173,79 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 f"Failed to push fixes to GitHub: {e}",
             )
 
-    def _verify_build(
-        self, repo_info: dict, state: FactoryState
+    def _full_build_validation(
+        self,
+        repo_info: dict,
+        files_dict: dict[str, GeneratedFile],
+        state: FactoryState,
     ) -> None:
-        """Clone repo and verify it builds."""
+        """
+        Clone repo and run full validation suite:
+        1. npm install
+        2. npm audit --fix
+        3. npm run typecheck (if available)
+        4. npm run lint --fix (if available)
+        5. npm run build
+        6. npm test (if tests exist)
+        7. Commit and push any fixes
+
+        Uses authenticated clone URL for private repos.
+        """
+        import os
         import subprocess
         import tempfile
 
-        self.logger.info("Verifying build...")
+        self.logger.info("Starting full build validation...")
+
+        local_fixes_made = False
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # Clone
-                clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
+                # Clone with authentication for private repos
+                token = settings.github_token
+                if token:
+                    clone_url = f"https://{token}@github.com/{repo_info['owner']}/{repo_info['name']}.git"
+                else:
+                    clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
+
+                self.logger.info(f"Cloning repository...")
                 clone_result = subprocess.run(
                     ["git", "clone", "--depth=1", clone_url, tmpdir],
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=120,
                 )
 
                 if clone_result.returncode != 0:
+                    # Sanitize error to not leak token
+                    error_msg = clone_result.stderr.replace(token, "***") if token else clone_result.stderr
                     self._add_issue(
                         IssueSeverity.CRITICAL,
                         IssueType.BUILD_ERROR,
-                        f"Failed to clone repo: {clone_result.stderr[:200]}",
+                        f"Failed to clone repo: {error_msg[:200]}",
                     )
                     return
 
-                # npm install
+                # Configure git for commits
+                subprocess.run(
+                    ["git", "config", "user.email", "factory@vineyard.dev"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "config", "user.name", "Vineyard Factory"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                )
+
+                # 1. npm install
                 self.logger.info("Running npm install...")
                 install_result = subprocess.run(
                     ["npm", "install"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
-                    timeout=180,
+                    timeout=300,
                 )
 
                 if install_result.returncode != 0:
@@ -1156,21 +1257,136 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                     )
                     return
 
-                # npm run build
+                # 2. npm audit --fix
+                self.logger.info("Running npm audit --fix...")
+                audit_result = subprocess.run(
+                    ["npm", "audit", "--fix"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                # Check if audit made changes
+                if audit_result.returncode == 0:
+                    # Check for package-lock.json changes
+                    status_result = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if "package" in status_result.stdout:
+                        local_fixes_made = True
+                        self.logger.info("npm audit fixed some vulnerabilities")
+
+                # Also run npm audit to report remaining vulnerabilities
+                audit_report = subprocess.run(
+                    ["npm", "audit", "--json"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+
+                if audit_report.returncode != 0:
+                    try:
+                        audit_data = json.loads(audit_report.stdout)
+                        vulns = audit_data.get("vulnerabilities", {})
+                        for pkg, info in list(vulns.items())[:5]:
+                            severity = info.get("severity", "unknown")
+                            issue_severity = IssueSeverity.CRITICAL if severity in ["critical", "high"] else IssueSeverity.MEDIUM
+                            self._add_issue(
+                                issue_severity,
+                                IssueType.VULNERABLE_DEPENDENCY,
+                                f"Vulnerability in {pkg}: {severity}",
+                                details={"package": pkg, "severity": severity, "via": info.get("via", [])[:2]},
+                            )
+                    except json.JSONDecodeError:
+                        pass
+
+                # 3. Check for and run typecheck
+                pkg_json_path = os.path.join(tmpdir, "package.json")
+                if os.path.exists(pkg_json_path):
+                    with open(pkg_json_path) as f:
+                        pkg_data = json.load(f)
+
+                    scripts = pkg_data.get("scripts", {})
+
+                    if "typecheck" in scripts or "type-check" in scripts:
+                        script_name = "typecheck" if "typecheck" in scripts else "type-check"
+                        self.logger.info(f"Running npm run {script_name}...")
+                        typecheck_result = subprocess.run(
+                            ["npm", "run", script_name],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                        )
+
+                        if typecheck_result.returncode != 0:
+                            errors = self._parse_typescript_errors(
+                                typecheck_result.stderr + typecheck_result.stdout
+                            )
+                            for error in errors[:5]:
+                                self._add_issue(
+                                    IssueSeverity.HIGH,
+                                    IssueType.TYPECHECK_ERROR,
+                                    error.get("message", "Type error"),
+                                    file=error.get("file"),
+                                    details=error,
+                                )
+
+                    # 4. Run lint --fix
+                    if "lint" in scripts:
+                        self.logger.info("Running npm run lint -- --fix...")
+                        lint_result = subprocess.run(
+                            ["npm", "run", "lint", "--", "--fix"],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                            timeout=180,
+                        )
+
+                        # Check if lint made changes
+                        status_result = subprocess.run(
+                            ["git", "status", "--porcelain"],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                        )
+                        if status_result.stdout.strip():
+                            local_fixes_made = True
+                            self.logger.info("Lint auto-fixed some issues")
+
+                        if lint_result.returncode != 0:
+                            # Parse lint errors
+                            errors = self._parse_lint_errors(
+                                lint_result.stderr + lint_result.stdout
+                            )
+                            for error in errors[:5]:
+                                self._add_issue(
+                                    IssueSeverity.MEDIUM,
+                                    IssueType.LINT_ERROR,
+                                    error.get("message", "Lint error"),
+                                    file=error.get("file"),
+                                    details=error,
+                                )
+
+                # 5. npm run build
                 self.logger.info("Running npm run build...")
                 build_result = subprocess.run(
                     ["npm", "run", "build"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
-                    timeout=300,
+                    timeout=600,
                 )
 
                 if build_result.returncode != 0:
-                    # Parse build errors
                     errors = self._parse_build_errors(build_result.stderr + build_result.stdout)
 
-                    for error in errors:
+                    for error in errors[:10]:
                         self._add_issue(
                             IssueSeverity.CRITICAL,
                             IssueType.BUILD_ERROR,
@@ -1188,19 +1404,89 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                         )
                     return
 
-                self.logger.info("Build verification passed!")
+                self.logger.info("Build passed!")
 
-        except subprocess.TimeoutExpired:
+                # 6. Run tests if they exist
+                if os.path.exists(os.path.join(tmpdir, "__tests__")) or \
+                   os.path.exists(os.path.join(tmpdir, "tests")) or \
+                   "test" in scripts:
+                    self.logger.info("Running npm test...")
+                    test_result = subprocess.run(
+                        ["npm", "test", "--", "--passWithNoTests"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                        env={**os.environ, "CI": "true"},
+                    )
+
+                    if test_result.returncode != 0:
+                        errors = self._parse_test_errors(
+                            test_result.stderr + test_result.stdout
+                        )
+                        for error in errors[:5]:
+                            self._add_issue(
+                                IssueSeverity.HIGH,
+                                IssueType.TEST_FAILURE,
+                                error.get("message", "Test failed"),
+                                file=error.get("file"),
+                                details=error,
+                            )
+                    else:
+                        self.logger.info("All tests passed!")
+
+                # 7. Commit and push fixes if any were made
+                if local_fixes_made:
+                    self.logger.info("Committing and pushing local fixes...")
+
+                    # Stage all changes
+                    subprocess.run(
+                        ["git", "add", "."],
+                        cwd=tmpdir,
+                        capture_output=True,
+                    )
+
+                    # Commit
+                    commit_result = subprocess.run(
+                        ["git", "commit", "-m", "fix(qa): Auto-remediation by QA agent\n\n- npm audit --fix\n- lint --fix"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    if commit_result.returncode == 0:
+                        # Push
+                        push_result = subprocess.run(
+                            ["git", "push"],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+
+                        if push_result.returncode == 0:
+                            self.logger.info("Successfully pushed local fixes to GitHub")
+                        else:
+                            error_msg = push_result.stderr.replace(token, "***") if token else push_result.stderr
+                            self._add_issue(
+                                IssueSeverity.WARNING,
+                                IssueType.PUSH_FAILED,
+                                f"Failed to push local fixes: {error_msg[:200]}",
+                            )
+
+                self.logger.info("Full build validation completed!")
+
+        except subprocess.TimeoutExpired as e:
             self._add_issue(
                 IssueSeverity.WARNING,
                 IssueType.BUILD_ERROR,
-                "Build verification timed out",
+                f"Build validation timed out at step: {e.cmd[0] if e.cmd else 'unknown'}",
             )
         except Exception as e:
             self._add_issue(
                 IssueSeverity.WARNING,
                 IssueType.BUILD_ERROR,
-                f"Build verification error: {e}",
+                f"Build validation error: {e}",
             )
 
     def _parse_build_errors(self, output: str) -> list[dict]:
@@ -1225,6 +1511,351 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 errors.append({"message": match.group(1)})
 
         return errors[:10]  # Limit to 10 errors
+
+    def _parse_typescript_errors(self, output: str) -> list[dict]:
+        """Parse TypeScript/tsc output for type errors."""
+        errors = []
+
+        # tsc style: src/file.ts(10,5): error TS2304: Cannot find name 'foo'
+        ts_pattern = r'([^\s]+\.tsx?)\((\d+),(\d+)\):\s*error\s+(TS\d+):\s*(.+)'
+        for match in re.finditer(ts_pattern, output):
+            errors.append({
+                "file": match.group(1),
+                "line": int(match.group(2)),
+                "column": int(match.group(3)),
+                "code": match.group(4),
+                "message": match.group(5),
+            })
+
+        # Next.js/webpack style: ./src/file.ts:10:5
+        nextjs_pattern = r'\./([^\s:]+):(\d+):(\d+)\n.*?Error:\s*(.+?)(?:\n|$)'
+        for match in re.finditer(nextjs_pattern, output, re.MULTILINE):
+            errors.append({
+                "file": match.group(1),
+                "line": int(match.group(2)),
+                "column": int(match.group(3)),
+                "message": match.group(4),
+            })
+
+        return errors[:10]
+
+    def _parse_lint_errors(self, output: str) -> list[dict]:
+        """Parse ESLint/Next.js lint output."""
+        errors = []
+
+        # ESLint style: /path/to/file.ts:10:5 error message rule-name
+        eslint_pattern = r'([^\s]+\.tsx?):(\d+):(\d+)\s+(warning|error)\s+(.+?)\s+(\S+)$'
+        for match in re.finditer(eslint_pattern, output, re.MULTILINE):
+            errors.append({
+                "file": match.group(1),
+                "line": int(match.group(2)),
+                "column": int(match.group(3)),
+                "severity": match.group(4),
+                "message": match.group(5),
+                "rule": match.group(6),
+            })
+
+        # Next.js lint style: ./src/file.tsx
+        # Error: message
+        nextjs_pattern = r'\./([^\n]+\.tsx?)\n\s*(?:Error|Warning):\s*(.+?)(?:\n|$)'
+        for match in re.finditer(nextjs_pattern, output):
+            if not any(e.get("file", "").endswith(match.group(1)) for e in errors):
+                errors.append({
+                    "file": match.group(1),
+                    "message": match.group(2),
+                })
+
+        return errors[:10]
+
+    def _parse_test_errors(self, output: str) -> list[dict]:
+        """Parse Jest/Vitest test output for failures."""
+        errors = []
+
+        # Jest FAIL line: FAIL src/__tests__/file.test.ts
+        fail_pattern = r'FAIL\s+([^\n]+\.test\.tsx?)'
+        for match in re.finditer(fail_pattern, output):
+            file_path = match.group(1)
+
+            # Try to find the specific error for this file
+            # Jest error: ● Test Suite › test name
+            test_error_pattern = rf'{re.escape(file_path)}.*?●\s+([^\n]+)\n\s*(.+?)(?=\n\n|\Z)'
+            test_match = re.search(test_error_pattern, output, re.DOTALL)
+            if test_match:
+                errors.append({
+                    "file": file_path,
+                    "test": test_match.group(1),
+                    "message": test_match.group(2)[:200],
+                })
+            else:
+                errors.append({
+                    "file": file_path,
+                    "message": "Test suite failed",
+                })
+
+        # Vitest style: FAIL  src/file.test.ts > test name
+        vitest_pattern = r'FAIL\s+([^\s>]+)\s+>\s+(.+?)\n(.+?)(?=\n(?:FAIL|PASS)|\Z)'
+        for match in re.finditer(vitest_pattern, output, re.DOTALL):
+            errors.append({
+                "file": match.group(1),
+                "test": match.group(2),
+                "message": match.group(3)[:200],
+            })
+
+        return errors[:10]
+
+    def _verify_page_references(
+        self, files_dict: dict[str, GeneratedFile], state: FactoryState
+    ) -> None:
+        """Verify that all referenced internal links have corresponding pages."""
+        # Collect all existing pages (app router)
+        existing_pages = set()
+        for path in files_dict.keys():
+            if path.startswith("app/") and path.endswith("/page.tsx"):
+                # Convert app/dashboard/page.tsx to /dashboard
+                route = "/" + path[4:-9]  # Remove "app/" and "/page.tsx"
+                if route == "/":
+                    route = "/"
+                existing_pages.add(route)
+            elif path == "app/page.tsx":
+                existing_pages.add("/")
+
+        # Find all internal links in components
+        referenced_routes = set()
+        route_references: dict[str, list[str]] = {}  # route -> files that reference it
+
+        for path, f in files_dict.items():
+            if not path.endswith((".tsx", ".ts", ".jsx", ".js")):
+                continue
+
+            content = f.content
+
+            # Next.js Link href="/path"
+            link_pattern = r'<Link[^>]*href=["\'](/[^"\']*)["\']'
+            for match in re.finditer(link_pattern, content):
+                route = match.group(1).split("?")[0]  # Remove query params
+                route = route.split("#")[0]  # Remove hash
+                if route and not route.startswith("/api/"):
+                    referenced_routes.add(route)
+                    if route not in route_references:
+                        route_references[route] = []
+                    route_references[route].append(path)
+
+            # router.push("/path") or router.replace("/path")
+            router_pattern = r'router\.(?:push|replace)\(["\'](/[^"\']*)["\']'
+            for match in re.finditer(router_pattern, content):
+                route = match.group(1).split("?")[0]
+                route = route.split("#")[0]
+                if route and not route.startswith("/api/"):
+                    referenced_routes.add(route)
+                    if route not in route_references:
+                        route_references[route] = []
+                    route_references[route].append(path)
+
+            # redirect("/path")
+            redirect_pattern = r'redirect\(["\'](/[^"\']*)["\']'
+            for match in re.finditer(redirect_pattern, content):
+                route = match.group(1).split("?")[0]
+                if route and not route.startswith("/api/"):
+                    referenced_routes.add(route)
+                    if route not in route_references:
+                        route_references[route] = []
+                    route_references[route].append(path)
+
+        # Check for missing pages
+        for route in referenced_routes:
+            # Normalize route for comparison
+            normalized = route.rstrip("/") or "/"
+
+            # Check if page exists (exact match or dynamic segment)
+            page_exists = False
+            for existing in existing_pages:
+                if existing == normalized:
+                    page_exists = True
+                    break
+                # Check for dynamic routes [id], [slug], etc.
+                if self._route_matches_dynamic(normalized, existing):
+                    page_exists = True
+                    break
+
+            if not page_exists:
+                refs = route_references.get(route, [])
+                issue = self._add_issue(
+                    IssueSeverity.HIGH,
+                    IssueType.MISSING_PAGE,
+                    f"Referenced page '{route}' does not exist",
+                    details={
+                        "route": route,
+                        "referenced_in": refs[:3],
+                        "existing_pages": list(existing_pages)[:10],
+                    },
+                )
+
+                # Generate the missing page
+                page_path = f"app{route}/page.tsx" if route != "/" else "app/page.tsx"
+                if page_path not in files_dict:
+                    content = self._generate_placeholder_page(route, state)
+                    if content:
+                        files_dict[page_path] = GeneratedFile(
+                            path=page_path,
+                            content=content,
+                            language="typescript",
+                        )
+                        self.files_modified.append(page_path)
+                        self._mark_issue_fixed(issue, f"Generated placeholder page at {page_path}")
+
+    def _route_matches_dynamic(self, actual: str, pattern: str) -> bool:
+        """Check if an actual route matches a dynamic route pattern."""
+        actual_parts = actual.strip("/").split("/")
+        pattern_parts = pattern.strip("/").split("/")
+
+        if len(actual_parts) != len(pattern_parts):
+            return False
+
+        for actual_part, pattern_part in zip(actual_parts, pattern_parts):
+            if pattern_part.startswith("[") and pattern_part.endswith("]"):
+                continue  # Dynamic segment, matches anything
+            if actual_part != pattern_part:
+                return False
+
+        return True
+
+    def _generate_placeholder_page(self, route: str, state: FactoryState) -> str:
+        """Generate a placeholder page for a missing route."""
+        page_name = route.strip("/").split("/")[-1] or "Home"
+        page_name = page_name.replace("-", " ").title()
+
+        return f'''export default function {page_name.replace(" ", "")}Page() {{
+  return (
+    <div className="container mx-auto py-8">
+      <h1 className="text-2xl font-bold">{page_name}</h1>
+      <p className="text-gray-600 mt-2">This page is under construction.</p>
+    </div>
+  );
+}}
+'''
+
+    def _verify_webhook_handlers(
+        self, files_dict: dict[str, GeneratedFile], state: FactoryState
+    ) -> None:
+        """Verify webhook handlers exist when webhook utilities are present."""
+        # Check for webhook-related imports/usage
+        webhook_utils_used = False
+        webhook_config_present = False
+        webhook_handlers: list[str] = []
+
+        for path, f in files_dict.items():
+            content = f.content
+
+            # Check for webhook utility usage
+            if "webhook" in content.lower():
+                # Check for Stripe webhook
+                if "stripe" in content.lower() and ("constructEvent" in content or "webhookSecret" in content.lower()):
+                    webhook_utils_used = True
+                    if "/api/" in path and "webhook" in path.lower():
+                        webhook_handlers.append(path)
+
+                # Check for webhook configuration
+                if "WEBHOOK_SECRET" in content or "webhookSecret" in content:
+                    webhook_config_present = True
+
+        # If webhook utils are used but no handlers exist
+        if webhook_utils_used and not webhook_handlers:
+            # Check if there's a stripe webhook specifically
+            stripe_webhook_path = "app/api/webhooks/stripe/route.ts"
+            if stripe_webhook_path not in files_dict:
+                issue = self._add_issue(
+                    IssueSeverity.HIGH,
+                    IssueType.MISSING_WEBHOOK_HANDLER,
+                    "Stripe webhook utilities used but no webhook handler found",
+                    details={
+                        "expected_path": stripe_webhook_path,
+                        "webhook_config_present": webhook_config_present,
+                    },
+                )
+
+                # Generate webhook handler
+                content = self._generate_stripe_webhook_handler(state)
+                if content:
+                    files_dict[stripe_webhook_path] = GeneratedFile(
+                        path=stripe_webhook_path,
+                        content=content,
+                        language="typescript",
+                    )
+                    self.files_modified.append(stripe_webhook_path)
+                    self._mark_issue_fixed(issue, f"Generated Stripe webhook handler at {stripe_webhook_path}")
+
+    def _generate_stripe_webhook_handler(self, state: FactoryState) -> str:
+        """Generate a Stripe webhook handler."""
+        return '''import { headers } from "next/headers";
+import { NextResponse } from "next/server";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2023-10-16",
+});
+
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
+export async function POST(req: Request) {
+  const body = await req.text();
+  const signature = headers().get("stripe-signature")!;
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+  } catch (err) {
+    console.error("Webhook signature verification failed:", err);
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object as Stripe.Checkout.Session;
+        // Handle successful checkout
+        console.log("Checkout completed:", session.id);
+        break;
+      }
+      case "customer.subscription.created":
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as Stripe.Subscription;
+        // Handle subscription changes
+        console.log("Subscription updated:", subscription.id);
+        break;
+      }
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object as Stripe.Subscription;
+        // Handle subscription cancellation
+        console.log("Subscription deleted:", subscription.id);
+        break;
+      }
+      case "invoice.payment_succeeded": {
+        const invoice = event.data.object as Stripe.Invoice;
+        // Handle successful payment
+        console.log("Payment succeeded:", invoice.id);
+        break;
+      }
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as Stripe.Invoice;
+        // Handle failed payment
+        console.log("Payment failed:", invoice.id);
+        break;
+      }
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+
+    return NextResponse.json({ received: true });
+  } catch (err) {
+    console.error("Webhook handler error:", err);
+    return NextResponse.json(
+      { error: "Webhook handler failed" },
+      { status: 500 }
+    );
+  }
+}
+'''
 
     # =========================================================================
     # Helper Methods
