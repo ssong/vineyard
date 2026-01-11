@@ -104,8 +104,8 @@ def handle_history(respond: Respond):
     lines = [
         "*📊 Opportunity History*\n",
         "```",
-        f"{'Status':<10} {'Score':<6} {'Name':<35} {'Date':<12}",
-        f"{'-'*10} {'-'*6} {'-'*35} {'-'*12}",
+        f"{'Status':<10} {'Score':<6} {'Name':<30} {'ID':<10} {'Date':<12}",
+        f"{'-'*10} {'-'*6} {'-'*30} {'-'*10} {'-'*12}",
     ]
 
     for opp in opportunities:
@@ -119,7 +119,8 @@ def handle_history(respond: Respond):
             status_display = "⏳ Pending"
 
         score = opp.get("score", 0)
-        name = opp.get("name", "Unknown")[:35]
+        name = opp.get("name", "Unknown")[:30]
+        opp_id = opp.get("id", "")[:8]  # First 8 chars of UUID
 
         # Format created_at
         created = opp.get("created_at", "")
@@ -132,7 +133,7 @@ def handle_history(respond: Respond):
         else:
             date_str = ""
 
-        lines.append(f"{status_display:<10} {score:<6} {name:<35} {date_str:<12}")
+        lines.append(f"{status_display:<10} {score:<6} {name:<30} {opp_id:<10} {date_str:<12}")
 
     lines.append("```")
 

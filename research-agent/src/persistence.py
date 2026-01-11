@@ -175,7 +175,8 @@ def load_report(report_id: str):
             from src.models import (
                 ResearchReport, OpportunityReport, Recommendation, RevenueForecast,
                 Opportunity, OpportunityCategory, TargetSegment, BusinessModel,
-                ValidationResult,
+                ValidationResult, ValidationConfidence, FourUResult, GraveyardCheck,
+                PlatformRiskAssessment,
             )
             
             # Load opportunities for this report
@@ -225,13 +226,34 @@ def load_report(report_id: str):
                     # Create minimal OpportunityReport
                     validation = ValidationResult(
                         opportunity_id=opp.id,
-                        tam_validation_passed=True,
-                        tam_confidence=0.7,
-                        competitor_validation_passed=True,
-                        competitor_confidence=0.7,
-                        pricing_validation_passed=True,
-                        pricing_confidence=0.7,
-                        overall_confidence=0.7,
+                        four_u_result=FourUResult(
+                            unworkable_score=20,
+                            unworkable_evidence="Loaded from DB",
+                            unavoidable_score=20,
+                            unavoidable_evidence="Loaded from DB",
+                            urgent_score=20,
+                            urgent_evidence="Loaded from DB",
+                            underserved_score=20,
+                            underserved_evidence="Loaded from DB",
+                        ),
+                        graveyard_check=GraveyardCheck(
+                            is_graveyard=False,
+                            graveyard_signals=[],
+                            failed_competitors=[],
+                            failure_reasons=[],
+                            market_viability="viable",
+                        ),
+                        platform_risk=PlatformRiskAssessment(
+                            platform_dependencies=[],
+                            risk_level="low",
+                            specific_risks=[],
+                            mitigation_strategies=[],
+                        ),
+                        community_pain_signals=[],
+                        confidence=ValidationConfidence.MEDIUM,
+                        proceed_recommendation=True,
+                        key_risks=[],
+                        key_opportunities=[],
                     )
                     
                     forecast = RevenueForecast(
