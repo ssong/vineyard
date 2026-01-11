@@ -1,6 +1,6 @@
 """Research Enrichment Agent - Personas, SEO, and competitor analysis."""
 
-from typing import Any
+from typing import Any, Optional
 
 from src.agents.base import BaseAgent
 from src.config.prompts import RESEARCH_ENRICHMENT_PROMPT
@@ -12,6 +12,30 @@ from src.models import (
     UserPersona,
 )
 from src.tools import llm, miro
+
+# Known placeholder values that should not be passed to LLM prompts
+PLACEHOLDER_VALUES = {
+    "Target users",
+    "Unique approach",
+    "Manual process",
+    "Competition",
+    "Growing market",
+    "Unnamed Project",
+}
+
+
+def _is_placeholder(value: Optional[str]) -> bool:
+    """Check if a value is a known placeholder."""
+    if not value:
+        return True
+    return value.strip() in PLACEHOLDER_VALUES
+
+
+def _is_placeholder_list(values: list[str]) -> bool:
+    """Check if a list contains only placeholder values or is empty."""
+    if not values:
+        return True
+    return all(_is_placeholder(v) for v in values)
 
 
 class ResearchEnrichmentAgent(BaseAgent):
@@ -28,6 +52,25 @@ class ResearchEnrichmentAgent(BaseAgent):
 
         opp = state.handoff.opportunity
         validation = state.handoff.validation
+
+        # Log placeholder detection
+        placeholders_detected = []
+        if _is_placeholder(opp.target_market_description):
+            placeholders_detected.append("target_market_description")
+        if _is_placeholder(opp.differentiation_angle):
+            placeholders_detected.append("differentiation_angle")
+        if _is_placeholder(opp.problem_statement):
+            placeholders_detected.append("problem_statement")
+        if _is_placeholder_list(opp.direct_competitors):
+            placeholders_detected.append("direct_competitors")
+        if _is_placeholder_list(opp.competitor_weaknesses):
+            placeholders_detected.append("competitor_weaknesses")
+
+        if placeholders_detected:
+            self.logger.warning(
+                f"Placeholder values detected and will be omitted from prompts: {placeholders_detected}. "
+                "LLM will research these values based on product name and description."
+            )
 
         # Generate personas
         personas = self._generate_personas(opp)
@@ -59,15 +102,26 @@ class ResearchEnrichmentAgent(BaseAgent):
 
     def _generate_personas(self, opp) -> list[UserPersona]:
         """Generate detailed user personas."""
+        # Build context, skipping placeholder values
+        context_lines = [
+            f"PRODUCT: {opp.name}",
+            f"DESCRIPTION: {opp.detailed_description}",
+            f"TARGET SEGMENT: {opp.target_segment}",
+        ]
+
+        if not _is_placeholder(opp.target_market_description):
+            context_lines.append(f"TARGET MARKET: {opp.target_market_description}")
+
+        if not _is_placeholder(opp.problem_statement):
+            context_lines.append(f"PROBLEM: {opp.problem_statement}")
+
+        context = "\n".join(context_lines)
+
         user_prompt = f"""Create 3-5 detailed user personas for this product:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.detailed_description}
-TARGET SEGMENT: {opp.target_segment}
-TARGET MARKET: {opp.target_market_description}
-PROBLEM: {opp.problem_statement}
+{context}
 
-For each persona, provide JSON array with:
+Research and identify the most likely target users based on the product description. For each persona, provide JSON array with:
 {{
     "personas": [
         {{
@@ -121,14 +175,31 @@ For each persona, provide JSON array with:
 
     def _generate_competitor_matrix(self, opp) -> list[CompetitorFeatureMatrix]:
         """Generate detailed competitor analysis."""
+        # Build context, skipping placeholder values
+        context_lines = [f"PRODUCT: {opp.name}"]
+
+        has_competitors = not _is_placeholder_list(opp.direct_competitors)
+        if has_competitors:
+            context_lines.append(f"KNOWN COMPETITORS: {', '.join(opp.direct_competitors)}")
+
+        if not _is_placeholder(opp.differentiation_angle):
+            context_lines.append(f"DIFFERENTIATION: {opp.differentiation_angle}")
+
+        if not _is_placeholder_list(opp.competitor_weaknesses):
+            context_lines.append(f"COMPETITOR WEAKNESSES: {', '.join(opp.competitor_weaknesses)}")
+
+        context = "\n".join(context_lines)
+
+        # If no competitors provided, ask LLM to research them
+        research_instruction = ""
+        if not has_competitors:
+            research_instruction = "First, research and identify 3-5 direct competitors in this space. "
+
         user_prompt = f"""Analyze competitors for this product:
 
-PRODUCT: {opp.name}
-COMPETITORS: {', '.join(opp.direct_competitors)}
-DIFFERENTIATION: {opp.differentiation_angle}
-COMPETITOR WEAKNESSES: {', '.join(opp.competitor_weaknesses)}
+{context}
 
-For each competitor, provide JSON:
+{research_instruction}For each competitor, provide JSON:
 {{
     "competitors": [
         {{
@@ -205,14 +276,25 @@ For each competitor, provide JSON:
 
     def _generate_seo_strategy(self, opp) -> SEOStrategy:
         """Generate SEO and keyword strategy."""
+        # Build context, skipping placeholder values
+        context_lines = [
+            f"PRODUCT: {opp.name}",
+            f"DESCRIPTION: {opp.one_liner}",
+        ]
+
+        if not _is_placeholder(opp.target_market_description):
+            context_lines.append(f"TARGET: {opp.target_market_description}")
+
+        if not _is_placeholder_list(opp.direct_competitors):
+            context_lines.append(f"COMPETITORS: {', '.join(opp.direct_competitors)}")
+
+        context = "\n".join(context_lines)
+
         user_prompt = f"""Create an SEO strategy for this product:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.one_liner}
-TARGET: {opp.target_market_description}
-COMPETITORS: {', '.join(opp.direct_competitors)}
+{context}
 
-Provide JSON:
+Research relevant keywords and competitors in this space. Provide JSON:
 {{
     "primary_keywords": [
         {{"keyword": "keyword phrase", "volume": 1200, "difficulty": "low"}}
@@ -252,14 +334,30 @@ Provide JSON:
         self, opp, competitors: list[CompetitorFeatureMatrix]
     ) -> str:
         """Generate positioning statement."""
+        # Build context, skipping placeholder values
+        context_lines = [
+            f"PRODUCT: {opp.name}",
+            f"DESCRIPTION: {opp.detailed_description}",
+        ]
+
+        if not _is_placeholder(opp.differentiation_angle):
+            context_lines.append(f"DIFFERENTIATION: {opp.differentiation_angle}")
+
+        if not _is_placeholder(opp.target_market_description):
+            context_lines.append(f"TARGET: {opp.target_market_description}")
+
+        # Only include competitor gaps if we have real competitor data
+        competitor_gaps = [g for c in competitors for g in c.key_gaps][:5]
+        if competitor_gaps:
+            context_lines.append(f"COMPETITOR GAPS: {', '.join(competitor_gaps)}")
+
+        context = "\n".join(context_lines)
+
         user_prompt = f"""Write a positioning statement for this product:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.detailed_description}
-DIFFERENTIATION: {opp.differentiation_angle}
-TARGET: {opp.target_market_description}
-COMPETITOR GAPS: {', '.join([g for c in competitors for g in c.key_gaps][:5])}
+{context}
 
+Based on the product and any competitor analysis, craft a compelling positioning statement.
 Format: "For [target customer] who [statement of need], [product name] is a [product category] that [key benefit]. Unlike [competitors], we [key differentiator]."
 """
 
@@ -269,5 +367,5 @@ Format: "For [target customer] who [statement of need], [product name] is a [pro
             )
         except Exception as e:
             self.logger.error(f"Failed to generate positioning: {e}")
-            return f"{opp.name} helps {opp.target_segment} by {opp.differentiation_angle}"
+            return f"{opp.name}: A solution for {opp.target_segment}"
 
