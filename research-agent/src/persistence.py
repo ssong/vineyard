@@ -375,6 +375,40 @@ def reject_all_opportunities(report_id: str) -> int:
         return 0
 
 
+def get_opportunity_by_id_prefix(id_prefix: str) -> Optional[dict]:
+    """
+    Find an opportunity by ID prefix.
+
+    Args:
+        id_prefix: First characters of the opportunity UUID
+
+    Returns:
+        Opportunity dict or None if not found
+    """
+    try:
+        init_db()
+
+        with _get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT o.id, o.report_id, o.name, o.one_liner, o.score, o.status,
+                       o.project_url, o.data, o.created_at
+                FROM opportunities o
+                WHERE o.id LIKE ?
+                ORDER BY o.created_at DESC
+                LIMIT 1
+            """, (f"{id_prefix}%",))
+
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
+    except Exception as e:
+        logger.exception(f"Failed to find opportunity by prefix: {e}")
+        return None
+
+
 def list_opportunities(limit: int = 20, status: Optional[str] = None) -> list[dict]:
     """
     List recent opportunities.

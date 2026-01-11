@@ -175,11 +175,15 @@ def register_unified_command_handler(shared_app):
         elif subcommand == "history":
             # Show all research opportunities with status
             _handle_history(respond, shared_app)
+        elif subcommand.startswith("start"):
+            # Start/resume an opportunity by ID
+            _handle_start_opportunity(respond, command, shared_app)
         elif subcommand == "help":
             respond(
                 text="*Vineyard Commands*\n"
                 "• `/vineyard new` - Start a new research cycle\n"
                 "• `/vineyard history` - Show all opportunities with status\n"
+                "• `/vineyard start [id]` - Start an opportunity by ID (from history)\n"
                 "• `/vineyard list` - List available Linear projects\n"
                 "• `/vineyard build [project-id]` - Start factory for a project\n"
                 "• `/vineyard status` - List factory runs and their status\n"
@@ -315,6 +319,184 @@ def _handle_history(respond: Respond, shared_app: App):
     except Exception as e:
         logger.exception("Failed to list opportunity history")
         respond(text=f"❌ Failed to list history: {str(e)}")
+
+
+def _handle_start_opportunity(respond: Respond, command: dict, shared_app: App):
+    """Handle /vineyard start [id] - start an opportunity by ID from history."""
+    set_project_path(RESEARCH_AGENT_PATH)
+    clear_src_modules()
+    inject_app_module(RESEARCH_AGENT_PATH, shared_app)
+
+    text = command.get("text", "").strip()
+    parts = text.split()
+    opp_id_prefix = parts[1] if len(parts) > 1 else None
+    channel_id = command["channel_id"]
+
+    if not opp_id_prefix:
+        respond(
+            text="Please provide an opportunity ID: `/vineyard start [id]`\n\n"
+            "_Use `/vineyard history` to see available opportunities and their IDs._"
+        )
+        return
+
+    try:
+        from src.persistence import get_opportunity_by_id_prefix, mark_opportunity_selected
+        from src.linear.client import create_project_for_opportunity
+
+        # Find the opportunity by ID prefix
+        opp_data = get_opportunity_by_id_prefix(opp_id_prefix)
+
+        if not opp_data:
+            respond(
+                text=f"❌ No opportunity found matching ID `{opp_id_prefix}`\n\n"
+                "_Use `/vineyard history` to see available opportunities._"
+            )
+            return
+
+        opp_name = opp_data.get("name", "Unknown")
+        opp_id = opp_data.get("id", "")
+        current_status = opp_data.get("status", "pending")
+
+        # Check if already has a project
+        existing_url = opp_data.get("project_url")
+        if existing_url and current_status == "selected":
+            respond(
+                text=f"ℹ️ *{opp_name}* is already selected.\n\n"
+                f"📋 Linear project: <{existing_url}|View Project>\n\n"
+                "_Use `/vineyard build [project-id]` to start the factory._"
+            )
+            return
+
+        respond(
+            text=f"🚀 *Starting opportunity: {opp_name}*\n\n"
+            "_Creating Linear project..._"
+        )
+
+        # Load full opportunity report for Linear project creation
+        from src.persistence import load_report
+
+        report_id = opp_data.get("report_id")
+        report = load_report(report_id) if report_id else None
+
+        # Find the opportunity report in the loaded report
+        selected_opp = None
+        if report:
+            for opp_report in report.opportunities:
+                if opp_report.opportunity.id == opp_id:
+                    selected_opp = opp_report
+                    break
+
+        if not selected_opp:
+            # Create a minimal opportunity report for Linear
+            from src.models import (
+                Opportunity, OpportunityReport, Recommendation, RevenueForecast,
+                ValidationResult, ValidationConfidence, FourUResult, GraveyardCheck,
+                PlatformRiskAssessment, OpportunityCategory, TargetSegment, BusinessModel,
+            )
+            import json
+
+            opp_json = json.loads(opp_data.get("data", "{}")) if opp_data.get("data") else {}
+
+            opp = Opportunity(
+                id=opp_id,
+                name=opp_name,
+                slug=opp_json.get("slug", opp_name.lower().replace(" ", "-")[:50]),
+                one_liner=opp_data.get("one_liner", ""),
+                detailed_description=opp_json.get("detailed_description", ""),
+                category=OpportunityCategory(opp_json.get("category", "unbundling")),
+                target_segment=TargetSegment(opp_json.get("target_segment", "smb")),
+                business_model=BusinessModel(opp_json.get("business_model", "subscription_monthly")),
+                problem_statement=opp_json.get("problem_statement", ""),
+                current_solutions=opp_json.get("current_solutions", []),
+                pain_intensity=opp_json.get("pain_intensity", 5),
+                frequency=opp_json.get("frequency", "weekly"),
+                target_market_description=opp_json.get("target_market_description", ""),
+                estimated_tam_businesses=opp_json.get("estimated_tam_businesses", 0),
+                geographic_focus=opp_json.get("geographic_focus", []),
+                direct_competitors=opp_json.get("direct_competitors", []),
+                competitor_weaknesses=opp_json.get("competitor_weaknesses", []),
+                differentiation_angle=opp_json.get("differentiation_angle", ""),
+                build_complexity=opp_json.get("build_complexity", "medium"),
+                estimated_build_weeks=opp_json.get("estimated_build_weeks", 4),
+                key_technical_components=opp_json.get("key_technical_components", []),
+                platform_dependencies=opp_json.get("platform_dependencies", []),
+                suggested_price_low=opp_json.get("suggested_price_low", 0),
+                suggested_price_mid=opp_json.get("suggested_price_mid", 0),
+                suggested_price_high=opp_json.get("suggested_price_high", 0),
+                four_u_score=opp_json.get("four_u_score", 0),
+                solo_viability_score=opp_json.get("solo_viability_score", 0),
+                acquirability_score=opp_json.get("acquirability_score", 0),
+                overall_score=opp_data.get("score", 0),
+            )
+
+            validation = ValidationResult(
+                opportunity_id=opp_id,
+                four_u_result=FourUResult(
+                    unworkable_score=20, unworkable_evidence="",
+                    unavoidable_score=20, unavoidable_evidence="",
+                    urgent_score=20, urgent_evidence="",
+                    underserved_score=20, underserved_evidence="",
+                ),
+                graveyard_check=GraveyardCheck(
+                    is_graveyard=False, graveyard_signals=[], failed_competitors=[],
+                    failure_reasons=[], market_viability="viable",
+                ),
+                platform_risk=PlatformRiskAssessment(
+                    platform_dependencies=[], risk_level="low",
+                    specific_risks=[], mitigation_strategies=[],
+                ),
+                community_pain_signals=[],
+                confidence=ValidationConfidence.MEDIUM,
+                proceed_recommendation=True,
+                key_risks=[],
+                key_opportunities=[],
+            )
+
+            forecast = RevenueForecast(
+                opportunity_id=opp_id,
+                assumed_arpu=opp.suggested_price_mid,
+                mrr_month_12_conservative=0,
+                mrr_month_12_moderate=0,
+                mrr_month_12_optimistic=0,
+                mrr_month_24_conservative=0,
+                mrr_month_24_moderate=0,
+                mrr_month_24_optimistic=0,
+                estimated_build_cost=0,
+                break_even_month_moderate=None,
+                exit_value_moderate=0,
+            )
+
+            selected_opp = OpportunityReport(
+                opportunity=opp,
+                validation=validation,
+                forecast=forecast,
+                recommendation=Recommendation.GO,
+                recommendation_rationale="Selected from history",
+                next_steps=[],
+                risks_to_monitor=[],
+            )
+
+        # Create Linear project
+        project_url = create_project_for_opportunity(selected_opp)
+
+        # Mark opportunity as selected
+        mark_opportunity_selected(opp_id, project_url)
+
+        shared_app.client.chat_postMessage(
+            channel=channel_id,
+            text=(
+                f"✅ *{opp_name}* started!\n\n"
+                f"📋 Linear project created: <{project_url}|View Project>\n\n"
+                f"_Next: Run `/vineyard build [project-id]` to start the factory_"
+            ),
+        )
+
+    except Exception as e:
+        logger.exception("Failed to start opportunity")
+        shared_app.client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ Failed to start opportunity: {str(e)}",
+        )
 
 
 def _handle_factory_resume(respond: Respond, command: dict, shared_app: App):
