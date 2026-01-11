@@ -14,8 +14,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Database path
-DEFAULT_DATA_DIR = os.path.expanduser("~/.vineyard/research-agent")
+# Database path - Use /app/data in Docker, fallback to ~/.vineyard locally
+# Set VINEYARD_DATA_DIR env var to override
+DEFAULT_DATA_DIR = "/app/data" if os.path.exists("/app") else os.path.expanduser("~/.vineyard/research-agent")
 DATA_DIR = Path(os.getenv("VINEYARD_DATA_DIR", DEFAULT_DATA_DIR))
 DB_PATH = DATA_DIR / "vineyard.db"
 
