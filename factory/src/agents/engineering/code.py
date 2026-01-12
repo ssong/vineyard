@@ -31,6 +31,9 @@ class CodeAgent(BaseAgent):
         """
         self.log_start()
 
+        # Initialize subtask tracking
+        self.init_subtask_tracking(state, parent_phase="build")
+
         opp = state.handoff.opportunity
         prefs = state.handoff.build_preferences
         spec = self.get_previous_output(state, "spec")
@@ -39,58 +42,91 @@ class CodeAgent(BaseAgent):
         # Initialize generation context for tracking files
         ctx = GenerationContext()
 
-        # Generate in order of dependencies:
-        # 1. Project structure (Gemfile, configs)
-        # 2. Models and migrations (database layer)
-        # 3. Services (business logic)
-        # 4. Controllers and API routes
-        # 5. ViewComponents (reusable UI)
-        # 6. Views and layouts (frontend)
-
-        self.logger.info("Generating project structure...")
-        self._generate_project_structure(ctx, opp, prefs)
-
-        self.logger.info("Generating models and migrations...")
-        self._generate_models_and_migrations(ctx, spec, prefs)
-
-        self.logger.info("Generating service objects...")
-        self._generate_services(ctx, prefs, spec)
-
-        self.logger.info("Generating controllers...")
-        self._generate_controllers(ctx, spec, prefs)
-
-        self.logger.info("Generating ViewComponents...")
-        self._generate_view_components(ctx, opp, prefs, design)
-
-        self.logger.info("Generating views and layouts...")
-        self._generate_views(ctx, opp, prefs, spec, design)
-
-        # Convert context files to GeneratedFile list
-        all_files = [
-            GeneratedFile(
-                path=entry.path,
-                content=entry.content,
-                language=entry.language,
+        try:
+            # Generate in order of dependencies with subtask tracking
+            self.run_step(
+                "project_structure",
+                "Generate project structure",
+                lambda: self._generate_project_structure(ctx, opp, prefs),
+                "Gemfile, configs, initializers",
             )
-            for entry in ctx.get_all_files()
-        ]
 
-        self.logger.info(f"Generated {len(all_files)} unique files")
+            self.run_step(
+                "models_migrations",
+                "Generate models and migrations",
+                lambda: self._generate_models_and_migrations(ctx, spec, prefs),
+                "ActiveRecord models, database migrations",
+            )
 
-        # Create GitHub repository
-        repo_info = self._create_github_repo(opp, all_files)
+            self.run_step(
+                "services",
+                "Generate service objects",
+                lambda: self._generate_services(ctx, prefs, spec),
+                "Business logic, jobs, mailers",
+            )
 
-        output = {
-            "files": all_files,
-            "github_repo_url": repo_info.get("url", ""),
-            "github_owner": repo_info.get("owner", ""),
-            "github_repo_name": repo_info.get("name", ""),
-            "file_count": len(all_files),
-            "folder_structure": ctx.get_folder_structure(),
-        }
+            self.run_step(
+                "controllers",
+                "Generate controllers",
+                lambda: self._generate_controllers(ctx, spec, prefs),
+                "Application and API controllers",
+            )
 
-        self.log_complete()
-        return output
+            self.run_step(
+                "view_components",
+                "Generate ViewComponents",
+                lambda: self._generate_view_components(ctx, opp, prefs, design),
+                "Reusable UI components",
+            )
+
+            self.run_step(
+                "views",
+                "Generate views and layouts",
+                lambda: self._generate_views(ctx, opp, prefs, spec, design),
+                "ERB templates, Stimulus controllers",
+            )
+
+            # Convert context files to GeneratedFile list
+            all_files = [
+                GeneratedFile(
+                    path=entry.path,
+                    content=entry.content,
+                    language=entry.language,
+                )
+                for entry in ctx.get_all_files()
+            ]
+
+            self.logger.info(f"Generated {len(all_files)} unique files")
+
+            # Create GitHub repository
+            repo_info = self.run_step(
+                "github_repo",
+                "Create GitHub repository",
+                lambda: self._create_github_repo(opp, all_files),
+                "Push code to GitHub",
+            )
+
+            output = {
+                "files": all_files,
+                "github_repo_url": repo_info.get("url", ""),
+                "github_owner": repo_info.get("owner", ""),
+                "github_repo_name": repo_info.get("name", ""),
+                "file_count": len(all_files),
+                "folder_structure": ctx.get_folder_structure(),
+            }
+
+            # Complete agent task
+            self.complete_agent_task(
+                f"Generated {len(all_files)} files for {opp.name}",
+                [repo_info.get("url", "")] if repo_info.get("url") else None,
+            )
+
+            self.log_complete()
+            return output
+
+        except Exception as e:
+            self.fail_agent_task(str(e))
+            raise
 
     def _generate_project_structure(
         self, ctx: GenerationContext, opp, prefs

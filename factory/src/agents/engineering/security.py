@@ -124,6 +124,9 @@ class SecurityAgent(BaseAgent):
         """
         self.log_start()
 
+        # Initialize subtask tracking
+        self.init_subtask_tracking(state, parent_phase="build")
+
         opp = state.handoff.opportunity
         prefs = state.handoff.build_preferences
         build = self.get_previous_output(state, "build")
@@ -135,61 +138,123 @@ class SecurityAgent(BaseAgent):
         # Convert to dict for easier lookup
         files_dict = {f.path: f for f in files}
 
-        # Run pattern-based security scans
-        self.logger.info(f"Scanning {len(files)} files for security issues...")
-        secret_issues = self._scan_for_secrets(files_dict)
-        injection_issues = self._scan_for_injection(files_dict)
-        auth_issues = self._scan_for_auth_vulnerabilities(files_dict)
-        mass_assignment_issues = self._scan_for_mass_assignment(files_dict)
-        path_traversal_issues = self._scan_for_path_traversal(files_dict)
+        try:
+            # Run pattern-based security scans
+            self.logger.info(f"Scanning {len(files)} files for security issues...")
 
-        # Perform AI-powered code security analysis
-        code_issues = self._analyze_code_security(files)
+            secret_issues = self.run_step(
+                "secrets_scan",
+                "Scan for hardcoded secrets",
+                lambda: self._scan_for_secrets(files_dict),
+                "Detect API keys, passwords, tokens",
+            )
 
-        # Check for common vulnerabilities based on stack
-        vuln_check = self._check_vulnerabilities(prefs)
+            injection_issues = self.run_step(
+                "injection_scan",
+                "Scan for injection vulnerabilities",
+                lambda: self._scan_for_injection(files_dict),
+                "SQL injection, XSS, command injection",
+            )
 
-        # Check dependencies (Gemfile)
-        dep_issues = self._check_dependencies(files_dict, prefs)
+            auth_issues = self.run_step(
+                "auth_scan",
+                "Scan for auth vulnerabilities",
+                lambda: self._scan_for_auth_vulnerabilities(files_dict),
+                "Authentication and authorization issues",
+            )
 
-        # Combine all issues
-        all_code_issues = (
-            secret_issues +
-            injection_issues +
-            auth_issues +
-            mass_assignment_issues +
-            path_traversal_issues +
-            code_issues
-        )
+            mass_assignment_issues = self.run_step(
+                "mass_assignment_scan",
+                "Scan for mass assignment",
+                lambda: self._scan_for_mass_assignment(files_dict),
+                "Strong parameters validation",
+            )
 
-        # Generate security recommendations
-        recommendations = self._generate_recommendations(all_code_issues, vuln_check, dep_issues)
+            path_traversal_issues = self.run_step(
+                "path_traversal_scan",
+                "Scan for path traversal",
+                lambda: self._scan_for_path_traversal(files_dict),
+                "File access vulnerabilities",
+            )
 
-        # Generate security documentation
-        security_doc = self._generate_security_doc(opp, recommendations)
+            # Perform AI-powered code security analysis
+            code_issues = self.run_step(
+                "ai_security_analysis",
+                "AI security analysis",
+                lambda: self._analyze_code_security(files),
+                "Deep analysis of security patterns",
+            )
 
-        # Push security findings to GitHub if there are critical issues
-        if state.github_repo and any(i.get("severity") == "critical" for i in all_code_issues):
-            self._push_security_report(state, all_code_issues)
+            # Check for common vulnerabilities based on stack
+            vuln_check = self.run_step(
+                "vuln_check",
+                "Check stack vulnerabilities",
+                lambda: self._check_vulnerabilities(prefs),
+                "OWASP Top 10 assessment",
+            )
 
-        output = {
-            "secret_issues": secret_issues,
-            "injection_issues": injection_issues,
-            "auth_issues": auth_issues,
-            "mass_assignment_issues": mass_assignment_issues,
-            "path_traversal_issues": path_traversal_issues,
-            "code_issues": code_issues,
-            "vulnerability_check": vuln_check,
-            "dependency_issues": dep_issues,
-            "recommendations": recommendations,
-            "security_documentation": security_doc,
-            "total_issues": len(all_code_issues),
-            "critical_issues": len([i for i in all_code_issues if i.get("severity") == "critical"]),
-            "high_issues": len([i for i in all_code_issues if i.get("severity") == "high"]),
-        }
+            # Check dependencies (Gemfile)
+            dep_issues = self.run_step(
+                "dependency_check",
+                "Check dependency security",
+                lambda: self._check_dependencies(files_dict, prefs),
+                "Gem vulnerability analysis",
+            )
 
-        self.log_complete()
-        return output
+            # Combine all issues
+            all_code_issues = (
+                secret_issues +
+                injection_issues +
+                auth_issues +
+                mass_assignment_issues +
+                path_traversal_issues +
+                code_issues
+            )
+
+            # Generate security recommendations
+            recommendations = self._generate_recommendations(all_code_issues, vuln_check, dep_issues)
+
+            # Generate security documentation
+            security_doc = self._generate_security_doc(opp, recommendations)
+
+            # Push security findings to GitHub if there are critical issues
+            if state.github_repo and any(i.get("severity") == "critical" for i in all_code_issues):
+                self.run_step(
+                    "push_report",
+                    "Push security report",
+                    lambda: self._push_security_report(state, all_code_issues),
+                    "Create security report on GitHub",
+                )
+
+            output = {
+                "secret_issues": secret_issues,
+                "injection_issues": injection_issues,
+                "auth_issues": auth_issues,
+                "mass_assignment_issues": mass_assignment_issues,
+                "path_traversal_issues": path_traversal_issues,
+                "code_issues": code_issues,
+                "vulnerability_check": vuln_check,
+                "dependency_issues": dep_issues,
+                "recommendations": recommendations,
+                "security_documentation": security_doc,
+                "total_issues": len(all_code_issues),
+                "critical_issues": len([i for i in all_code_issues if i.get("severity") == "critical"]),
+                "high_issues": len([i for i in all_code_issues if i.get("severity") == "high"]),
+            }
+
+            # Complete agent task
+            critical_count = len([i for i in all_code_issues if i.get("severity") == "critical"])
+            high_count = len([i for i in all_code_issues if i.get("severity") == "high"])
+            self.complete_agent_task(
+                f"Security scan complete: {len(all_code_issues)} issues ({critical_count} critical, {high_count} high)"
+            )
+
+            self.log_complete()
+            return output
+
+        except Exception as e:
+            self.fail_agent_task(str(e))
+            raise
 
     def _scan_for_secrets(self, files_dict: dict[str, GeneratedFile]) -> list[dict]:
         """Scan all files for hardcoded secrets using pattern matching."""

@@ -20,41 +20,89 @@ class DevOpsAgent(BaseAgent):
         """
         self.log_start()
 
+        # Initialize subtask tracking
+        self.init_subtask_tracking(state, parent_phase="build")
+
         opp = state.handoff.opportunity
         prefs = state.handoff.build_preferences
 
-        # Generate Dockerfile for Rails
-        dockerfile = self._generate_dockerfile(prefs)
+        try:
+            # Generate Dockerfile for Rails
+            dockerfile = self.run_step(
+                "dockerfile",
+                "Generate Dockerfile",
+                lambda: self._generate_dockerfile(prefs),
+                "Multi-stage Docker build for Rails",
+            )
 
-        # Generate docker-compose for local development
-        compose = self._generate_docker_compose(opp, prefs)
+            # Generate docker-compose for local development
+            compose = self.run_step(
+                "docker_compose",
+                "Generate docker-compose",
+                lambda: self._generate_docker_compose(opp, prefs),
+                "Local development environment",
+            )
 
-        # Generate CI/CD workflow (GitHub Actions)
-        ci_cd = self._generate_ci_cd(opp, prefs)
+            # Generate CI/CD workflow (GitHub Actions)
+            ci_cd = self.run_step(
+                "ci_cd",
+                "Generate CI/CD workflows",
+                lambda: self._generate_ci_cd(opp, prefs),
+                "GitHub Actions for test and deploy",
+            )
 
-        # Generate Railway deployment config
-        deploy_config = self._generate_deploy_config(opp, prefs)
+            # Generate Railway deployment config
+            deploy_config = self.run_step(
+                "deploy_config",
+                "Generate deployment config",
+                lambda: self._generate_deploy_config(opp, prefs),
+                "Railway config, Procfile, Puma",
+            )
 
-        # Generate environment setup
-        env_setup = self._generate_env_setup(prefs)
+            # Generate environment setup
+            env_setup = self.run_step(
+                "env_setup",
+                "Generate environment setup",
+                lambda: self._generate_env_setup(prefs),
+                "Environment variables documentation",
+            )
 
-        # Generate monitoring config
-        monitoring = self._generate_monitoring_config(opp)
+            # Generate monitoring config
+            monitoring = self.run_step(
+                "monitoring",
+                "Generate monitoring config",
+                lambda: self._generate_monitoring_config(opp),
+                "Sentry, health checks, logging",
+            )
 
-        # Combine all files
-        all_files = dockerfile + compose + ci_cd + deploy_config + env_setup + monitoring
+            # Combine all files
+            all_files = dockerfile + compose + ci_cd + deploy_config + env_setup + monitoring
 
-        # Push to GitHub
-        self._push_to_github(state, all_files)
+            # Push to GitHub
+            self.run_step(
+                "push_infra",
+                "Push infrastructure to GitHub",
+                lambda: self._push_to_github(state, all_files),
+                "Push DevOps files to repository",
+            )
 
-        output = {
-            "infrastructure_files": all_files,
-            "hosting": prefs.hosting_preference,
-            "database": prefs.database_preference,
-        }
+            output = {
+                "infrastructure_files": all_files,
+                "hosting": prefs.hosting_preference,
+                "database": prefs.database_preference,
+            }
 
-        self.log_complete()
-        return output
+            # Complete agent task
+            self.complete_agent_task(
+                f"Generated {len(all_files)} infrastructure files for {prefs.hosting_preference}"
+            )
+
+            self.log_complete()
+            return output
+
+        except Exception as e:
+            self.fail_agent_task(str(e))
+            raise
 
     def _generate_dockerfile(self, prefs) -> list[GeneratedFile]:
         """Generate Dockerfile for Rails application."""

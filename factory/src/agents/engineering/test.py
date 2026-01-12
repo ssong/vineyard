@@ -26,6 +26,9 @@ class TestAgent(BaseAgent):
         """
         self.log_start()
 
+        # Initialize subtask tracking
+        self.init_subtask_tracking(state, parent_phase="build")
+
         opp = state.handoff.opportunity
         prefs = state.handoff.build_preferences
         spec = self.get_previous_output(state, "spec")
@@ -44,47 +47,87 @@ class TestAgent(BaseAgent):
 
         self.logger.info(f"Building tests for {len(source_files)} source files")
 
-        # Generate test configuration first
-        self._generate_test_config(ctx, prefs)
+        try:
+            # Generate test configuration first
+            self.run_step(
+                "test_config",
+                "Generate test configuration",
+                lambda: self._generate_test_config(ctx, prefs),
+                "RSpec helpers, rails_helper, spec_helper",
+            )
 
-        # Generate test factories (FactoryBot)
-        self._generate_factories(ctx, spec, source_files)
+            # Generate test factories (FactoryBot)
+            self.run_step(
+                "factories",
+                "Generate test factories",
+                lambda: self._generate_factories(ctx, spec, source_files),
+                "FactoryBot factories for models",
+            )
 
-        # Generate model specs
-        self._generate_model_specs(ctx, source_files, prefs)
+            # Generate model specs
+            self.run_step(
+                "model_specs",
+                "Generate model specs",
+                lambda: self._generate_model_specs(ctx, source_files, prefs),
+                "Unit tests for ActiveRecord models",
+            )
 
-        # Generate request specs (API/controller tests)
-        self._generate_request_specs(ctx, spec, prefs)
+            # Generate request specs (API/controller tests)
+            self.run_step(
+                "request_specs",
+                "Generate request specs",
+                lambda: self._generate_request_specs(ctx, spec, prefs),
+                "API and controller integration tests",
+            )
 
-        # Generate system specs (E2E with Capybara)
-        self._generate_system_specs(ctx, opp, prefs)
+            # Generate system specs (E2E with Capybara)
+            self.run_step(
+                "system_specs",
+                "Generate system specs",
+                lambda: self._generate_system_specs(ctx, opp, prefs),
+                "E2E tests with Capybara",
+            )
 
-        # Get only test files (not source files)
-        test_files = [
-            GeneratedFile(path=e.path, content=e.content, language=e.language)
-            for e in ctx.get_all_files()
-            if e.category in ["test", "test_config", "factory", "support"]
-        ]
+            # Get only test files (not source files)
+            test_files = [
+                GeneratedFile(path=e.path, content=e.content, language=e.language)
+                for e in ctx.get_all_files()
+                if e.category in ["test", "test_config", "factory", "support"]
+            ]
 
-        self.logger.info(f"Generated {len(test_files)} test files")
+            self.logger.info(f"Generated {len(test_files)} test files")
 
-        # Push to GitHub
-        self._push_tests_to_github(state, test_files)
+            # Push to GitHub
+            self.run_step(
+                "push_tests",
+                "Push tests to GitHub",
+                lambda: self._push_tests_to_github(state, test_files),
+                "Push generated test files to repository",
+            )
 
-        # Count by type
-        model_count = len([f for f in test_files if "models" in f.path])
-        request_count = len([f for f in test_files if "requests" in f.path])
-        system_count = len([f for f in test_files if "system" in f.path])
+            # Count by type
+            model_count = len([f for f in test_files if "models" in f.path])
+            request_count = len([f for f in test_files if "requests" in f.path])
+            system_count = len([f for f in test_files if "system" in f.path])
 
-        output = {
-            "test_files": test_files,
-            "model_spec_count": model_count,
-            "request_spec_count": request_count,
-            "system_spec_count": system_count,
-        }
+            output = {
+                "test_files": test_files,
+                "model_spec_count": model_count,
+                "request_spec_count": request_count,
+                "system_spec_count": system_count,
+            }
 
-        self.log_complete()
-        return output
+            # Complete agent task
+            self.complete_agent_task(
+                f"Generated {len(test_files)} test files: {model_count} model, {request_count} request, {system_count} system specs"
+            )
+
+            self.log_complete()
+            return output
+
+        except Exception as e:
+            self.fail_agent_task(str(e))
+            raise
 
     def _categorize_source_file(self, path: str) -> str:
         """Categorize a source file for context tracking."""
