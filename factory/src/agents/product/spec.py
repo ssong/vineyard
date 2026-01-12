@@ -74,8 +74,8 @@ BUILD COMPLEXITY: {opp.build_complexity}
 BUILD TIME: {opp.estimated_build_weeks} weeks
 
 TECH STACK:
-- Frontend: {prefs.tech_stack.get('frontend', 'nextjs')}
-- Backend: {prefs.tech_stack.get('backend', 'python')}
+- Frontend: {prefs.tech_stack.get('frontend', 'rails')}
+- Backend: {prefs.tech_stack.get('backend', 'ruby')}
 - Database: {prefs.tech_stack.get('database', 'postgresql')}
 - Hosting: {prefs.hosting_preference}
 - Auth: {prefs.auth_preference}
@@ -253,10 +253,10 @@ Include tables for:
             board_id = board.get("id", "mock-id")
 
             # Create main components
-            miro.create_shape(board_id, "Frontend\n(Next.js)", "rectangle", 0, 0, 150, 80, "#bfdbfe")
-            miro.create_shape(board_id, "API\n(Backend)", "rectangle", 250, 0, 150, 80, "#bbf7d0")
+            miro.create_shape(board_id, "Frontend\n(Hotwire)", "rectangle", 0, 0, 150, 80, "#bfdbfe")
+            miro.create_shape(board_id, "API\n(Rails)", "rectangle", 250, 0, 150, 80, "#bbf7d0")
             miro.create_shape(board_id, "Database\n(PostgreSQL)", "rectangle", 500, 0, 150, 80, "#fed7aa")
-            miro.create_shape(board_id, "Auth\n(Clerk)", "rectangle", 250, 150, 150, 80, "#fecaca")
+            miro.create_shape(board_id, "Auth\n(Devise)", "rectangle", 250, 150, 150, 80, "#fecaca")
             miro.create_shape(board_id, "Payments\n(Stripe)", "rectangle", 250, 300, 150, 80, "#e9d5ff")
 
             return board.get("viewLink", "")
@@ -293,10 +293,10 @@ Generate JSON with engineering tasks:
     "tasks": [
         {{
             "title": "Setup project scaffold",
-            "description": "Initialize Next.js project with TypeScript, configure linting",
+            "description": "Initialize Rails project with RuboCop, configure linting",
             "acceptance_criteria": [
                 "Project builds successfully",
-                "Linting passes"
+                "RuboCop passes"
             ],
             "story_points": 2,
             "labels": ["setup", "frontend"],

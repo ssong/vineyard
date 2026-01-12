@@ -1,4 +1,4 @@
-"""QA Agent - Validates, remediates, and tracks code quality issues."""
+"""QA Agent - Validates, remediates, and tracks code quality issues for Rails."""
 
 import json
 import re
@@ -26,16 +26,12 @@ class IssueSeverity(str, Enum):
 class IssueType(str, Enum):
     MISSING_DEPENDENCY = "missing_dependency"
     VULNERABLE_DEPENDENCY = "vulnerable_dependency"
-    MALICIOUS_PACKAGE = "malicious_package"
     MISSING_STRUCTURE = "missing_structure"
-    IMPORT_MISMATCH = "import_mismatch"
-    AUTH_INCONSISTENCY = "auth_inconsistency"
     BUILD_ERROR = "build_error"
-    TYPECHECK_ERROR = "typecheck_error"
     LINT_ERROR = "lint_error"
     TEST_FAILURE = "test_failure"
-    MISSING_PAGE = "missing_page"
-    MISSING_WEBHOOK_HANDLER = "missing_webhook_handler"
+    SECURITY_ISSUE = "security_issue"
+    MISSING_ROUTE = "missing_route"
     PUSH_FAILED = "push_failed"
     DECISION_REQUIRED = "decision_required"
 
@@ -63,85 +59,81 @@ class QAValidationError(Exception):
 
 class QAAgent(BaseAgent):
     """
-    Agent that validates generated code, auto-remediates issues,
+    Agent that validates generated Rails code, auto-remediates issues,
     and tracks progress in Linear.
-
-    Features:
-    - Creates bug issues in Linear for each problem found
-    - Updates subtask status as work progresses
-    - Tags operator (@sang) when decisions are needed
-    - Refers to design docs for self-remediation
-    - Waits for operator input on ambiguous decisions
     """
 
     name = "QAAgent"
     domain = "engineering"
 
-    # Known vulnerable/malicious packages
-    KNOWN_VULNERABLE = {
-        "event-stream": "Contained malware in v3.3.6",
-        "flatmap-stream": "Malicious package",
-        "ua-parser-js": "Compromised in Oct 2021",
-        "coa": "Compromised in Nov 2021",
-        "rc": "Compromised in Nov 2021",
-        "node-ipc": "Contained protestware in v10.1.1+",
-        "colors": "Corrupted in v1.4.1+",
-        "faker": "Corrupted in v6.6.6",
+    # Required Rails files
+    REQUIRED_FILES = {
+        "Gemfile": {
+            "severity": IssueSeverity.CRITICAL,
+            "description": "Ruby dependencies file",
+        },
+        "config/routes.rb": {
+            "severity": IssueSeverity.CRITICAL,
+            "description": "Rails routes configuration",
+        },
+        "config/database.yml": {
+            "severity": IssueSeverity.HIGH,
+            "description": "Database configuration",
+        },
+        "app/controllers/application_controller.rb": {
+            "severity": IssueSeverity.CRITICAL,
+            "description": "Base controller",
+        },
+        "app/models/application_record.rb": {
+            "severity": IssueSeverity.CRITICAL,
+            "description": "Base model",
+        },
+        "app/views/layouts/application.html.erb": {
+            "severity": IssueSeverity.HIGH,
+            "description": "Main layout template",
+        },
     }
 
-    # Minimum secure versions for packages with known CVEs
-    MIN_SECURE_VERSIONS = {
-        "axios": "^1.6.0",
-        "jsonwebtoken": "^9.0.0",
-        "lodash": "^4.17.21",
-        "minimist": "^1.2.8",
-        "node-fetch": "^2.7.0",
-        "qs": "^6.11.0",
-        "semver": "^7.5.4",
-        "word-wrap": "^1.2.5",
-        "xml2js": "^0.6.0",
-        "tough-cookie": "^4.1.3",
-        "postcss": "^8.4.31",
-        "yaml": "^2.3.2",
-        "undici": "^5.26.3",
+    # Recommended files
+    RECOMMENDED_FILES = {
+        "config/initializers/devise.rb": {
+            "severity": IssueSeverity.MEDIUM,
+            "description": "Devise auth configuration",
+        },
+        "public/404.html": {
+            "severity": IssueSeverity.LOW,
+            "description": "Custom 404 page",
+        },
+        "public/500.html": {
+            "severity": IssueSeverity.LOW,
+            "description": "Custom 500 page",
+        },
+        ".rubocop.yml": {
+            "severity": IssueSeverity.LOW,
+            "description": "RuboCop linting configuration",
+        },
     }
 
-    # Known good versions for common packages
-    KNOWN_VERSIONS = {
-        "bcryptjs": "^2.4.3",
-        "jsonwebtoken": "^9.0.0",
-        "@types/bcryptjs": "^2.4.6",
-        "@types/jsonwebtoken": "^9.0.5",
-        "ws": "^8.16.0",
-        "@types/ws": "^8.5.10",
-        "@neondatabase/serverless": "^0.9.0",
-        "@prisma/client": "^5.10.0",
-        "@prisma/adapter-neon": "^5.10.0",
-        "stripe": "^14.14.0",
-        "@stripe/stripe-js": "^2.4.0",
-        "@clerk/nextjs": "^4.29.0",
-        "next": "^14.1.0",
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "typescript": "^5.3.0",
-        "tailwindcss": "^3.4.0",
-        "zod": "^3.22.0",
+    # Required gems for Rails app
+    REQUIRED_GEMS = {
+        "rails": "~> 7.1",
+        "pg": "~> 1.5",
+        "puma": "~> 6.4",
+        "turbo-rails": None,
+        "stimulus-rails": None,
+        "tailwindcss-rails": None,
     }
 
     def __init__(self):
         super().__init__()
         self.issues: list[QAIssue] = []
         self.files_modified: list[str] = []
-        self.linear_tracker: Optional[linear.FactoryLinearTracker] = None
+        self.linear_tracker = None
         self.qa_task_id: Optional[str] = None
-        self.subtasks: dict[str, str] = {}  # task_key -> linear_issue_id
 
     def run(self, state: FactoryState) -> dict[str, Any]:
         """
-        Validate and remediate generated code.
-
-        Creates Linear issues for tracking, auto-fixes what it can,
-        and requests operator input for decisions it can't make.
+        Validate and remediate generated Rails code.
         """
         self.log_start()
 
@@ -165,15 +157,9 @@ class QAAgent(BaseAgent):
         try:
             # Run validations with Linear subtask tracking
             self._run_validation_with_tracking(
-                "dependency_check",
-                "Check and fix dependencies",
-                lambda: self._fix_missing_dependencies(files_dict, state)
-            )
-
-            self._run_validation_with_tracking(
-                "vulnerability_check",
-                "Check and fix vulnerable packages",
-                lambda: self._fix_vulnerable_dependencies(files_dict, state)
+                "gemfile_check",
+                "Check and fix Gemfile dependencies",
+                lambda: self._fix_gemfile(files_dict, state)
             )
 
             self._run_validation_with_tracking(
@@ -183,27 +169,9 @@ class QAAgent(BaseAgent):
             )
 
             self._run_validation_with_tracking(
-                "import_check",
-                "Check and fix import/export mismatches",
-                lambda: self._fix_import_mismatches(files_dict, state)
-            )
-
-            self._run_validation_with_tracking(
-                "auth_check",
-                "Check auth system consistency",
-                lambda: self._fix_auth_consistency(files_dict, state)
-            )
-
-            self._run_validation_with_tracking(
-                "page_reference_check",
-                "Verify referenced pages exist",
-                lambda: self._verify_page_references(files_dict, state)
-            )
-
-            self._run_validation_with_tracking(
-                "webhook_handler_check",
-                "Verify webhook handlers exist",
-                lambda: self._verify_webhook_handlers(files_dict, state)
+                "routes_check",
+                "Verify routes configuration",
+                lambda: self._verify_routes(files_dict, state)
             )
 
             # Push fixes to GitHub
@@ -217,7 +185,7 @@ class QAAgent(BaseAgent):
             # Clone, verify build, run full validation suite
             self._run_validation_with_tracking(
                 "full_build_validation",
-                "Clone and validate build (audit, typecheck, lint, test)",
+                "Clone and validate build (bundle, rubocop, rspec)",
                 lambda: self._full_build_validation(repo_info, files_dict, state)
             )
 
@@ -257,7 +225,6 @@ class QAAgent(BaseAgent):
     def _init_linear_tracking(self, state: FactoryState) -> None:
         """Initialize Linear tracker from state."""
         if state.linear_phase_issues and state.linear_team_id:
-            # We'll use the existing phase tracking
             self.linear_tracker = linear.FactoryLinearTracker(
                 project_id=state.handoff.linear_project_id,
                 product_name=state.handoff.opportunity.name,
@@ -275,19 +242,18 @@ class QAAgent(BaseAgent):
         if not build_phase_id:
             return
 
-        # Create QA parent task
         qa_issue = linear.create_issue(
             project_id=state.handoff.linear_project_id,
             team_id=self.linear_tracker.team_id,
             title="🔍 QA Validation & Auto-Remediation",
             description="""## QA Validation
 
-Automated quality assurance that:
-1. Validates dependencies are complete
-2. Checks for vulnerable packages
+Automated quality assurance for Rails that:
+1. Validates Gemfile dependencies
+2. Checks for security vulnerabilities (bundle audit)
 3. Ensures required files exist
-4. Verifies import/export consistency
-5. Checks auth system consistency
+4. Runs RuboCop linting
+5. Runs RSpec tests
 6. Verifies build passes
 
 Issues found will be auto-fixed when possible.
@@ -312,7 +278,6 @@ Issues found will be auto-fixed when possible.
         """Run a validation step with Linear subtask tracking."""
         subtask_id = None
 
-        # Create subtask in Linear
         if self.linear_tracker and self.qa_task_id:
             subtask = linear.create_issue(
                 project_id=self.linear_tracker.project_id,
@@ -327,18 +292,14 @@ Issues found will be auto-fixed when possible.
             )
             if subtask:
                 subtask_id = subtask.get("id")
-                self.subtasks[task_key] = subtask_id
 
         try:
-            # Run the validation
             validation_fn()
 
-            # Mark subtask complete
             if subtask_id and self.linear_tracker:
                 linear.complete_issue(subtask_id, self.linear_tracker.team_id)
 
         except Exception as e:
-            # Mark subtask failed
             if subtask_id and self.linear_tracker:
                 linear.add_comment(subtask_id, f"❌ Failed: {str(e)}")
             raise
@@ -357,22 +318,7 @@ Issues found will be auto-fixed when possible.
 **Auto-Fixed:** {fixed_count}
 **Remaining:** {unfixed_count}
 **Files Modified:** {len(self.files_modified)}
-
-### Fixed Issues
 """
-        for issue in self.issues:
-            if issue.fixed:
-                summary += f"- ✅ {issue.message}"
-                if issue.fix_action:
-                    summary += f" → {issue.fix_action}"
-                summary += "\n"
-
-        if unfixed_count > 0:
-            summary += "\n### Remaining Issues\n"
-            for issue in self.issues:
-                if not issue.fixed:
-                    emoji = "⚠️" if issue.severity == IssueSeverity.WARNING else "❌"
-                    summary += f"- {emoji} [{issue.severity.value}] {issue.message}\n"
 
         linear.add_comment(self.qa_task_id, summary)
         linear.complete_issue(self.qa_task_id, self.linear_tracker.team_id)
@@ -385,15 +331,7 @@ Issues found will be auto-fixed when possible.
         linear.mention_user_in_comment(
             self.qa_task_id,
             "sang",
-            f"""## ❌ QA Validation Failed
-
-**Error:** {error}
-
-**Issues Found:** {len(self.issues)}
-**Fixed:** {len([i for i in self.issues if i.fixed])}
-
-Please review and address the issues above.
-"""
+            f"## ❌ QA Validation Failed\n\n**Error:** {error}"
         )
 
     def _add_issue(
@@ -415,7 +353,6 @@ Please review and address the issues above.
         )
         self.issues.append(issue)
 
-        # Create Linear issue for high/critical issues
         if create_linear_issue and severity in [IssueSeverity.CRITICAL, IssueSeverity.HIGH]:
             if self.linear_tracker and self.qa_task_id:
                 severity_emoji = "🔴" if severity == IssueSeverity.CRITICAL else "🟠"
@@ -423,19 +360,7 @@ Please review and address the issues above.
                     project_id=self.linear_tracker.project_id,
                     team_id=self.linear_tracker.team_id,
                     title=f"{severity_emoji} [{issue_type.value}] {message[:80]}",
-                    description=f"""## QA Issue
-
-**Severity:** {severity.value}
-**Type:** {issue_type.value}
-**File:** {file or 'N/A'}
-
-{message}
-
-### Details
-```json
-{json.dumps(details or {}, indent=2)}
-```
-""",
+                    description=f"**Severity:** {severity.value}\n**File:** {file or 'N/A'}\n\n{message}",
                     labels=["bug", "qa"],
                     priority=1 if severity == IssueSeverity.CRITICAL else 2,
                     state_name="todo",
@@ -451,345 +376,70 @@ Please review and address the issues above.
         issue.fixed = True
         issue.fix_action = fix_action
 
-        # Update Linear issue if exists
         if issue.linear_issue_id and self.linear_tracker:
             linear.add_comment(issue.linear_issue_id, f"✅ Auto-fixed: {fix_action}")
             linear.complete_issue(issue.linear_issue_id, self.linear_tracker.team_id)
 
-    def _request_operator_decision(
-        self,
-        state: FactoryState,
-        question: str,
-        options: list[dict],
-        context: str,
-        timeout_seconds: int = 300,
-    ) -> Optional[str]:
-        """
-        Request a decision from the operator via Linear comment.
-
-        Args:
-            state: Factory state
-            question: The question to ask
-            options: List of {"key": str, "label": str, "description": str}
-            context: Additional context about why the decision is needed
-            timeout_seconds: How long to wait for a response
-
-        Returns:
-            The chosen option key, or None if timeout/error
-        """
-        if not self.qa_task_id or not self.linear_tracker:
-            self.logger.warning("Cannot request decision - no Linear tracking")
-            return None
-
-        # Format options
-        options_text = "\n".join([
-            f"**{i+1}. {opt['label']}**\n   {opt['description']}"
-            for i, opt in enumerate(options)
-        ])
-
-        comment_body = f"""## 🤔 Decision Required
-
-{question}
-
-### Context
-{context}
-
-### Options
-{options_text}
-
----
-**Please reply with the number (1, 2, etc.) or option key to continue.**
-"""
-
-        # Tag the operator
-        linear.mention_user_in_comment(self.qa_task_id, "sang", comment_body)
-
-        # Also add blocked label
-        if self.linear_tracker.team_id:
-            labels = linear.ensure_labels(self.linear_tracker.team_id, ["blocked", "needs-decision"])
-            if "needs-decision" in labels:
-                linear._add_label_to_issue(self.qa_task_id, labels["needs-decision"])
-
-        # Poll for response
-        start_time = time.time()
-        last_check = datetime.utcnow().isoformat()
-
-        self.logger.info(f"Waiting for operator decision (timeout: {timeout_seconds}s)")
-
-        while time.time() - start_time < timeout_seconds:
-            time.sleep(10)  # Check every 10 seconds
-
-            # Get recent comments
-            comments = linear.get_issue_comments(self.qa_task_id)
-
-            # Look for a response after our question
-            for comment in comments:
-                comment_time = comment.get("createdAt", "")
-                if comment_time <= last_check:
-                    continue
-
-                user = comment.get("user", {})
-                user_name = user.get("name", "").lower()
-
-                # Skip our own comments (from vineyard)
-                if "vineyard" in user_name:
-                    continue
-
-                body = comment.get("body", "").strip().lower()
-
-                # Check for option selection
-                for i, opt in enumerate(options):
-                    if (
-                        body == str(i + 1) or
-                        body == opt["key"].lower() or
-                        opt["label"].lower() in body
-                    ):
-                        self.logger.info(f"Operator selected option: {opt['key']}")
-
-                        # Acknowledge the decision
-                        linear.add_comment(
-                            self.qa_task_id,
-                            f"✅ Decision received: **{opt['label']}**\n\nContinuing with selected option..."
-                        )
-
-                        return opt["key"]
-
-        self.logger.warning(f"Timed out waiting for operator decision")
-        return None
-
-    def _check_design_docs_for_decision(
-        self,
-        state: FactoryState,
-        question_type: str,
-    ) -> Optional[str]:
-        """
-        Check design docs (PRD, spec) to find guidance for a decision.
-
-        Args:
-            state: Factory state with design/spec outputs
-            question_type: Type of decision needed (e.g., "auth_system")
-
-        Returns:
-            Decision value if found in docs, None otherwise
-        """
-        design_output = self.get_previous_output(state, "design")
-        spec_output = self.get_previous_output(state, "spec")
-        prefs = state.handoff.build_preferences
-
-        if question_type == "auth_system":
-            # Check build preferences first
-            auth_pref = prefs.auth_preference
-            if auth_pref:
-                self.logger.info(f"Found auth preference in build prefs: {auth_pref}")
-                return auth_pref
-
-            # Check PRD for auth mentions
-            prd = design_output.get("prd", "") if design_output else ""
-            if isinstance(prd, str):
-                if "clerk" in prd.lower():
-                    return "clerk"
-                elif "jwt" in prd.lower() or "custom auth" in prd.lower():
-                    return "custom"
-
-        elif question_type == "database":
-            db_pref = prefs.database_preference
-            if db_pref:
-                return db_pref
-
-        return None
-
-    # =========================================================================
-    # Validation Methods
-    # =========================================================================
-
-    def _fix_missing_dependencies(
+    def _fix_gemfile(
         self, files_dict: dict[str, GeneratedFile], state: FactoryState
     ) -> None:
-        """Detect and fix missing dependencies in package.json."""
-        pkg_file = files_dict.get("package.json")
-        if not pkg_file:
+        """Validate and fix Gemfile."""
+        gemfile = files_dict.get("Gemfile")
+        if not gemfile:
             self._add_issue(
                 IssueSeverity.CRITICAL,
                 IssueType.MISSING_STRUCTURE,
-                "No package.json found",
+                "No Gemfile found",
             )
             return
 
-        try:
-            pkg_data = json.loads(pkg_file.content)
-        except json.JSONDecodeError as e:
-            self._add_issue(
-                IssueSeverity.CRITICAL,
-                IssueType.BUILD_ERROR,
-                f"Invalid package.json: {e}",
-            )
-            return
-
-        declared_deps = set(pkg_data.get("dependencies", {}).keys())
-        declared_deps.update(pkg_data.get("devDependencies", {}).keys())
-
-        # Extract all imports from TS/JS files
-        missing_deps: dict[str, list[str]] = {}
-
-        for path, f in files_dict.items():
-            if not path.endswith((".ts", ".tsx", ".js", ".jsx")):
-                continue
-            if "node_modules" in path:
-                continue
-
-            imports = self._extract_imports(f.content)
-            for imp in imports:
-                pkg_name = self._get_package_name(imp)
-                if pkg_name and pkg_name not in declared_deps:
-                    if not self._is_builtin_module(pkg_name):
-                        if pkg_name not in missing_deps:
-                            missing_deps[pkg_name] = []
-                        missing_deps[pkg_name].append(path)
-
-        if not missing_deps:
-            self.logger.info("No missing dependencies found")
-            return
-
-        # Record and fix each missing dependency
-        for pkg, used_in_files in missing_deps.items():
-            issue = self._add_issue(
-                IssueSeverity.CRITICAL,
-                IssueType.MISSING_DEPENDENCY,
-                f"Package '{pkg}' imported but not in package.json",
-                details={"package": pkg, "used_in": used_in_files[:3]},
-            )
-
-            # Get appropriate version
-            version = self.KNOWN_VERSIONS.get(pkg, "latest")
-
-            # Add to dependencies
-            if "dependencies" not in pkg_data:
-                pkg_data["dependencies"] = {}
-            pkg_data["dependencies"][pkg] = version
-
-            self._mark_issue_fixed(issue, f"Added {pkg}@{version} to package.json")
-
-        # Update the file
-        new_content = json.dumps(pkg_data, indent=2) + "\n"
-        files_dict["package.json"] = GeneratedFile(
-            path="package.json",
-            content=new_content,
-            language="json",
-        )
-
-        if "package.json" not in self.files_modified:
-            self.files_modified.append("package.json")
-
-    def _fix_vulnerable_dependencies(
-        self, files_dict: dict[str, GeneratedFile], state: FactoryState
-    ) -> None:
-        """Detect and fix vulnerable dependencies."""
-        pkg_file = files_dict.get("package.json")
-        if not pkg_file:
-            return
-
-        try:
-            pkg_data = json.loads(pkg_file.content)
-        except json.JSONDecodeError:
-            return
-
+        content = gemfile.content
         modified = False
 
-        for dep_type in ["dependencies", "devDependencies"]:
-            deps = pkg_data.get(dep_type, {})
+        # Check for required gems
+        for gem, version in self.REQUIRED_GEMS.items():
+            gem_pattern = rf'gem\s+["\']{ re.escape(gem)}["\']'
+            if not re.search(gem_pattern, content):
+                issue = self._add_issue(
+                    IssueSeverity.HIGH,
+                    IssueType.MISSING_DEPENDENCY,
+                    f"Required gem '{gem}' not in Gemfile",
+                    file="Gemfile",
+                )
 
-            for pkg in list(deps.keys()):
-                # Check for malicious packages
-                if pkg in self.KNOWN_VULNERABLE:
-                    issue = self._add_issue(
-                        IssueSeverity.CRITICAL,
-                        IssueType.MALICIOUS_PACKAGE,
-                        f"Known malicious package: {pkg} - {self.KNOWN_VULNERABLE[pkg]}",
-                        details={"package": pkg, "reason": self.KNOWN_VULNERABLE[pkg]},
+                # Add the gem
+                if version:
+                    gem_line = f'gem "{gem}", "{version}"'
+                else:
+                    gem_line = f'gem "{gem}"'
+
+                # Find a good place to add it (after source line)
+                if 'source "https://rubygems.org"' in content:
+                    content = content.replace(
+                        'source "https://rubygems.org"',
+                        f'source "https://rubygems.org"\n\n{gem_line}'
                     )
+                else:
+                    content = gem_line + "\n" + content
 
-                    del deps[pkg]
-                    modified = True
-
-                    self._mark_issue_fixed(issue, f"Removed malicious package {pkg}")
-
-                # Check for vulnerable versions
-                elif pkg in self.MIN_SECURE_VERSIONS:
-                    current = deps[pkg]
-                    secure = self.MIN_SECURE_VERSIONS[pkg]
-
-                    if not self._version_satisfies(current, secure):
-                        issue = self._add_issue(
-                            IssueSeverity.HIGH,
-                            IssueType.VULNERABLE_DEPENDENCY,
-                            f"{pkg}@{current} has known vulnerabilities",
-                            details={
-                                "package": pkg,
-                                "current": current,
-                                "secure": secure,
-                            },
-                        )
-
-                        deps[pkg] = secure
-                        modified = True
-
-                        self._mark_issue_fixed(
-                            issue, f"Upgraded {pkg} from {current} to {secure}"
-                        )
+                modified = True
+                self._mark_issue_fixed(issue, f"Added {gem} to Gemfile")
 
         if modified:
-            new_content = json.dumps(pkg_data, indent=2) + "\n"
-            files_dict["package.json"] = GeneratedFile(
-                path="package.json",
-                content=new_content,
-                language="json",
+            files_dict["Gemfile"] = GeneratedFile(
+                path="Gemfile",
+                content=content,
+                language="ruby",
             )
-
-            if "package.json" not in self.files_modified:
-                self.files_modified.append("package.json")
+            if "Gemfile" not in self.files_modified:
+                self.files_modified.append("Gemfile")
 
     def _fix_missing_structure(
         self, files_dict: dict[str, GeneratedFile], state: FactoryState
     ) -> None:
         """Detect and generate missing structural files."""
-        prefs = state.handoff.build_preferences
-        frontend = prefs.tech_stack.get("frontend", "nextjs")
-
-        if frontend != "nextjs":
-            return
-
-        required_files = {
-            "app/layout.tsx": {
-                "severity": IssueSeverity.CRITICAL,
-                "description": "Root layout required for Next.js App Router",
-            },
-        }
-
-        recommended_files = {
-            "app/error.tsx": {
-                "severity": IssueSeverity.WARNING,
-                "description": "Error boundary for better error handling",
-            },
-            "app/not-found.tsx": {
-                "severity": IssueSeverity.WARNING,
-                "description": "Custom 404 page",
-            },
-            "app/loading.tsx": {
-                "severity": IssueSeverity.WARNING,
-                "description": "Loading UI for route transitions",
-            },
-            "app/global-error.tsx": {
-                "severity": IssueSeverity.WARNING,
-                "description": "Root-level error boundary",
-            },
-            "middleware.ts": {
-                "severity": IssueSeverity.MEDIUM,
-                "description": "Auth middleware for route protection",
-            },
-        }
-
         # Check required files
-        for path, info in required_files.items():
+        for path, info in self.REQUIRED_FILES.items():
             if path not in files_dict:
                 issue = self._add_issue(
                     info["severity"],
@@ -803,328 +453,190 @@ Please review and address the issues above.
                     files_dict[path] = GeneratedFile(
                         path=path,
                         content=content,
-                        language="typescript",
+                        language=self._get_language(path),
                     )
                     self.files_modified.append(path)
                     self._mark_issue_fixed(issue, f"Generated {path}")
 
         # Check recommended files
-        for path, info in recommended_files.items():
+        for path, info in self.RECOMMENDED_FILES.items():
             if path not in files_dict:
-                issue = self._add_issue(
+                self._add_issue(
                     info["severity"],
                     IssueType.MISSING_STRUCTURE,
                     f"Missing recommended file: {path} - {info['description']}",
                     file=path,
-                    create_linear_issue=False,  # Don't create bugs for warnings
+                    create_linear_issue=False,
                 )
 
-                content = self._generate_missing_file(path, state)
-                if content:
-                    files_dict[path] = GeneratedFile(
-                        path=path,
-                        content=content,
-                        language="typescript",
-                    )
-                    self.files_modified.append(path)
-                    self._mark_issue_fixed(issue, f"Generated {path}")
+    def _get_language(self, path: str) -> str:
+        """Get language based on file extension."""
+        if path.endswith(".rb"):
+            return "ruby"
+        elif path.endswith(".erb"):
+            return "erb"
+        elif path.endswith(".yml") or path.endswith(".yaml"):
+            return "yaml"
+        elif path.endswith(".html"):
+            return "html"
+        return "text"
 
     def _generate_missing_file(
         self, path: str, state: FactoryState
     ) -> Optional[str]:
         """Generate content for a missing file."""
         opp = state.handoff.opportunity
-        prefs = state.handoff.build_preferences
 
         templates = {
-            "app/layout.tsx": f'''import type {{ Metadata }} from "next";
-import {{ Inter }} from "next/font/google";
-import "./globals.css";
+            "config/routes.rb": '''Rails.application.routes.draw do
+  # Health check
+  get "health", to: "health#show"
 
-const inter = Inter({{ subsets: ["latin"] }});
+  # Devise authentication
+  devise_for :users
 
-export const metadata: Metadata = {{
-  title: "{opp.name}",
-  description: "{opp.one_liner[:150] if opp.one_liner else opp.name}",
-}};
+  # Marketing pages
+  root "pages#home"
+  get "pricing", to: "pages#pricing"
+  get "about", to: "pages#about"
 
-export default function RootLayout({{
-  children,
-}}: {{
-  children: React.ReactNode;
-}}) {{
-  return (
-    <html lang="en">
-      <body className={{inter.className}}>{{children}}</body>
-    </html>
-  );
-}}
+  # App routes (authenticated)
+  authenticate :user do
+    get "dashboard", to: "dashboard#show"
+    resource :settings, only: [:show, :update]
+  end
+
+  # API
+  namespace :api do
+    namespace :v1 do
+      # Add API resources here
+    end
+  end
+
+  # Webhooks
+  namespace :webhooks do
+    post "stripe", to: "stripe#create"
+  end
+end
 ''',
-            "app/error.tsx": '''\'use client\';
+            "app/controllers/application_controller.rb": '''class ApplicationController < ActionController::Base
+  before_action :configure_permitted_parameters, if: :devise_controller?
 
-import { useEffect } from "react";
+  protected
 
-export default function Error({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
-  useEffect(() => {
-    console.error(error);
-  }, [error]);
-
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center">
-      <h2 className="text-2xl font-bold mb-4">Something went wrong!</h2>
-      <button
-        className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-        onClick={() => reset()}
-      >
-        Try again
-      </button>
-    </div>
-  );
-}
+  def configure_permitted_parameters
+    devise_parameter_sanitizer.permit(:sign_up, keys: [:name])
+    devise_parameter_sanitizer.permit(:account_update, keys: [:name])
+  end
+end
 ''',
-            "app/not-found.tsx": '''import Link from "next/link";
-
-export default function NotFound() {
-  return (
-    <div className="flex min-h-screen flex-col items-center justify-center">
-      <h2 className="text-2xl font-bold mb-4">Page Not Found</h2>
-      <p className="text-gray-600 mb-4">Could not find the requested resource</p>
-      <Link
-        href="/"
-        className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-      >
-        Return Home
-      </Link>
-    </div>
-  );
-}
+            "app/models/application_record.rb": '''class ApplicationRecord < ActiveRecord::Base
+  primary_abstract_class
+end
 ''',
-            "app/loading.tsx": '''export default function Loading() {
-  return (
-    <div className="flex min-h-screen items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-gray-200 border-t-blue-500" />
-        <p className="text-gray-500">Loading...</p>
-      </div>
-    </div>
-  );
-}
-''',
-            "app/global-error.tsx": """'use client';
+            "app/views/layouts/application.html.erb": f'''<!DOCTYPE html>
+<html>
+  <head>
+    <title>{opp.name}</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="description" content="{opp.one_liner[:150] if opp.one_liner else opp.name}">
+    <%%= csrf_meta_tags %>
+    <%%= csp_meta_tag %>
 
-export default function GlobalError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
-  return (
-    <html>
-      <body>
-        <div className="flex min-h-screen flex-col items-center justify-center">
-          <h2 className="text-2xl font-bold mb-4">Something went wrong!</h2>
-          <p className="text-gray-600 mb-4">A critical error occurred</p>
-          <button
-            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-            onClick={() => reset()}
-          >
-            Try again
-          </button>
-        </div>
-      </body>
-    </html>
-  );
-}
-""",
-            "middleware.ts": self._generate_middleware(prefs),
+    <%%= stylesheet_link_tag "tailwind", "inter-font", "data-turbo-track": "reload" %>
+    <%%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%%= javascript_importmap_tags %>
+  </head>
+
+  <body class="bg-gray-50">
+    <%%= render "layouts/flash" %>
+    <%%= yield %>
+  </body>
+</html>
+''',
+            "config/database.yml": '''default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+
+development:
+  <<: *default
+  database: app_development
+
+test:
+  <<: *default
+  database: app_test
+
+production:
+  <<: *default
+  url: <%%= ENV["DATABASE_URL"] %>
+''',
+            "public/404.html": '''<!DOCTYPE html>
+<html>
+<head>
+  <title>Page Not Found</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
+    h1 { font-size: 2rem; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Page Not Found</h1>
+  <p>The page you were looking for doesn't exist.</p>
+  <a href="/">Go Home</a>
+</body>
+</html>
+''',
+            "public/500.html": '''<!DOCTYPE html>
+<html>
+<head>
+  <title>Server Error</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
+    h1 { font-size: 2rem; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Something Went Wrong</h1>
+  <p>We're sorry, but something went wrong on our end.</p>
+  <a href="/">Go Home</a>
+</body>
+</html>
+''',
         }
 
         return templates.get(path)
 
-    def _generate_middleware(self, prefs) -> str:
-        """Generate middleware based on auth preference."""
-        if prefs.auth_preference == "clerk":
-            return '''import { authMiddleware } from "@clerk/nextjs";
-
-export default authMiddleware({
-  publicRoutes: ["/", "/pricing", "/api/v1/health"],
-});
-
-export const config = {
-  matcher: ["/((?!.+\\\\.[\\\\w]+$|_next).*)", "/", "/(api|trpc)(.*)"],
-};
-'''
-        else:
-            return '''import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-
-export function middleware(request: NextRequest) {
-  // Add your auth logic here
-  // Example: Check for session token
-  const token = request.cookies.get("session_token");
-
-  // Protect dashboard routes
-  if (request.nextUrl.pathname.startsWith("/dashboard")) {
-    if (!token) {
-      return NextResponse.redirect(new URL("/login", request.url));
-    }
-  }
-
-  return NextResponse.next();
-}
-
-export const config = {
-  matcher: ["/dashboard/:path*", "/api/v1/:path*"],
-};
-'''
-
-    def _fix_import_mismatches(
+    def _verify_routes(
         self, files_dict: dict[str, GeneratedFile], state: FactoryState
     ) -> None:
-        """Detect and fix import/export mismatches."""
-        # Build export map: file -> [exported symbols]
-        export_map: dict[str, list[str]] = {}
+        """Verify routes.rb has essential routes."""
+        routes_file = files_dict.get("config/routes.rb")
+        if not routes_file:
+            return
 
-        for path, f in files_dict.items():
-            if path.endswith((".ts", ".tsx", ".js", ".jsx")):
-                if "node_modules" not in path:
-                    export_map[path] = self._extract_exports(f.content)
+        content = routes_file.content
 
-        # Check imports match exports
-        for path, f in files_dict.items():
-            if not path.endswith((".ts", ".tsx", ".js", ".jsx")):
-                continue
-            if "node_modules" in path:
-                continue
+        # Check for essential routes
+        essential_routes = [
+            ("root", "Root route"),
+            ("devise_for", "Devise authentication"),
+            ("health", "Health check endpoint"),
+        ]
 
-            import_details = self._extract_import_details(f.content)
-
-            for imp in import_details:
-                if not imp["source"].startswith("."):
-                    continue  # Skip node_modules imports
-
-                # Resolve relative import to file path
-                target_path = self._resolve_import_path(path, imp["source"], files_dict)
-                if not target_path or target_path not in export_map:
-                    continue
-
-                available_exports = export_map[target_path]
-
-                for symbol in imp["symbols"]:
-                    if symbol == "default":
-                        if "default" not in available_exports:
-                            self._add_issue(
-                                IssueSeverity.HIGH,
-                                IssueType.IMPORT_MISMATCH,
-                                f"No default export in {imp['source']}",
-                                file=path,
-                                details={"import": "default", "from": imp["source"]},
-                            )
-                    elif symbol not in available_exports:
-                        self._add_issue(
-                            IssueSeverity.HIGH,
-                            IssueType.IMPORT_MISMATCH,
-                            f"'{symbol}' not exported from {imp['source']}",
-                            file=path,
-                            details={
-                                "import": symbol,
-                                "from": imp["source"],
-                                "available": available_exports[:5],
-                            },
-                        )
-
-    def _fix_auth_consistency(
-        self, files_dict: dict[str, GeneratedFile], state: FactoryState
-    ) -> None:
-        """Detect and fix auth system inconsistencies."""
-        clerk_files: list[str] = []
-        jwt_files: list[str] = []
-
-        for path, f in files_dict.items():
-            if "node_modules" in path:
-                continue
-
-            content = f.content
-            if "@clerk" in content:
-                clerk_files.append(path)
-            if "jsonwebtoken" in content or re.search(r'\bjwt\b', content.lower()):
-                jwt_files.append(path)
-
-        # If using both, check if it's intentional
-        if clerk_files and jwt_files:
-            # First check design docs for guidance
-            intended_auth = self._check_design_docs_for_decision(state, "auth_system")
-
-            if intended_auth:
-                self.logger.info(f"Design docs specify auth system: {intended_auth}")
-                # Don't flag as issue if it matches the design
-                if intended_auth == "clerk" and jwt_files:
-                    self._add_issue(
-                        IssueSeverity.MEDIUM,
-                        IssueType.AUTH_INCONSISTENCY,
-                        f"JWT used in {len(jwt_files)} files but design specifies Clerk",
-                        details={"jwt_files": jwt_files[:3]},
-                        create_linear_issue=False,
-                    )
-                elif intended_auth == "custom" and clerk_files:
-                    self._add_issue(
-                        IssueSeverity.MEDIUM,
-                        IssueType.AUTH_INCONSISTENCY,
-                        f"Clerk used in {len(clerk_files)} files but design specifies custom auth",
-                        details={"clerk_files": clerk_files[:3]},
-                        create_linear_issue=False,
-                    )
-            else:
-                # No clear guidance - request operator decision
+        for route, description in essential_routes:
+            if route not in content:
                 self._add_issue(
                     IssueSeverity.MEDIUM,
-                    IssueType.AUTH_INCONSISTENCY,
-                    f"Mixed auth: Clerk in {len(clerk_files)} files, JWT in {len(jwt_files)} files",
-                    details={
-                        "clerk_files": clerk_files[:3],
-                        "jwt_files": jwt_files[:3],
-                    },
+                    IssueType.MISSING_ROUTE,
+                    f"Routes missing {description} ({route})",
+                    file="config/routes.rb",
+                    create_linear_issue=False,
                 )
-
-                # Request decision from operator
-                decision = self._request_operator_decision(
-                    state,
-                    question="Mixed authentication systems detected. Which should be the primary auth system?",
-                    options=[
-                        {
-                            "key": "clerk",
-                            "label": "Clerk (Recommended)",
-                            "description": "Use Clerk for all auth. Simpler setup, managed service.",
-                        },
-                        {
-                            "key": "jwt",
-                            "label": "Custom JWT",
-                            "description": "Use custom JWT auth. More control, self-managed.",
-                        },
-                        {
-                            "key": "hybrid",
-                            "label": "Keep Hybrid",
-                            "description": "Keep both: Clerk for UI, JWT for API. More complex but flexible.",
-                        },
-                    ],
-                    context=f"""The codebase currently uses:
-- Clerk auth in: {', '.join(clerk_files[:3])}
-- JWT auth in: {', '.join(jwt_files[:3])}
-
-This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
-                    timeout_seconds=300,
-                )
-
-                if decision:
-                    self.logger.info(f"Operator chose auth system: {decision}")
-                    # TODO: Implement auth system normalization based on decision
 
     def _push_fixes_to_github(
         self, files_dict: dict[str, GeneratedFile], repo_info: dict
@@ -1152,7 +664,6 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 files=files_to_push,
             )
 
-            # Verify all files were pushed
             pushed_paths = set(created)
             for path in self.files_modified:
                 if path not in pushed_paths:
@@ -1181,21 +692,19 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
     ) -> None:
         """
         Clone repo and run full validation suite:
-        1. npm install
-        2. npm audit --fix
-        3. npm run typecheck (if available)
-        4. npm run lint --fix (if available)
-        5. npm run build
-        6. npm test (if tests exist)
+        1. bundle install
+        2. bundle audit --fix
+        3. bundle exec rubocop -A
+        4. bundle exec rails db:migrate (setup)
+        5. bundle exec rspec
+        6. RAILS_ENV=production bundle exec rails assets:precompile
         7. Commit and push any fixes
-
-        Uses authenticated clone URL for private repos.
         """
         import os
         import subprocess
         import tempfile
 
-        self.logger.info("Starting full build validation...")
+        self.logger.info("Starting full build validation for Rails...")
 
         local_fixes_made = False
 
@@ -1208,7 +717,7 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 else:
                     clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
 
-                self.logger.info(f"Cloning repository...")
+                self.logger.info("Cloning repository...")
                 clone_result = subprocess.run(
                     ["git", "clone", "--depth=1", clone_url, tmpdir],
                     capture_output=True,
@@ -1217,7 +726,6 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 )
 
                 if clone_result.returncode != 0:
-                    # Sanitize error to not leak token
                     error_msg = clone_result.stderr.replace(token, "***") if token else clone_result.stderr
                     self._add_issue(
                         IssueSeverity.CRITICAL,
@@ -1227,21 +735,13 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                     return
 
                 # Configure git for commits
-                subprocess.run(
-                    ["git", "config", "user.email", "factory@vineyard.dev"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "config", "user.name", "Vineyard Factory"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                )
+                subprocess.run(["git", "config", "user.email", "factory@vineyard.dev"], cwd=tmpdir, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Vineyard Factory"], cwd=tmpdir, capture_output=True)
 
-                # 1. npm install
-                self.logger.info("Running npm install...")
+                # 1. bundle install
+                self.logger.info("Running bundle install...")
                 install_result = subprocess.run(
-                    ["npm", "install"],
+                    ["bundle", "install"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
@@ -1252,210 +752,148 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                     self._add_issue(
                         IssueSeverity.CRITICAL,
                         IssueType.BUILD_ERROR,
-                        "npm install failed",
+                        "bundle install failed",
                         details={"stderr": install_result.stderr[:500]},
                     )
                     return
 
-                # 2. npm audit --fix
-                self.logger.info("Running npm audit --fix...")
+                # 2. bundle audit
+                self.logger.info("Running bundle audit...")
                 audit_result = subprocess.run(
-                    ["npm", "audit", "--fix"],
+                    ["bundle", "audit", "check", "--update"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
                     timeout=120,
                 )
 
-                # Check if audit made changes
-                if audit_result.returncode == 0:
-                    # Check for package-lock.json changes
-                    status_result = subprocess.run(
-                        ["git", "status", "--porcelain"],
-                        cwd=tmpdir,
-                        capture_output=True,
-                        text=True,
-                    )
-                    if "package" in status_result.stdout:
-                        local_fixes_made = True
-                        self.logger.info("npm audit fixed some vulnerabilities")
+                if audit_result.returncode != 0:
+                    # Parse vulnerabilities
+                    for line in audit_result.stdout.split("\n"):
+                        if "CVE-" in line or "GHSA-" in line:
+                            self._add_issue(
+                                IssueSeverity.HIGH,
+                                IssueType.VULNERABLE_DEPENDENCY,
+                                f"Security vulnerability: {line[:100]}",
+                            )
 
-                # Also run npm audit to report remaining vulnerabilities
-                audit_report = subprocess.run(
-                    ["npm", "audit", "--json"],
+                # 3. RuboCop with auto-fix
+                self.logger.info("Running bundle exec rubocop -A...")
+                rubocop_result = subprocess.run(
+                    ["bundle", "exec", "rubocop", "-A", "--format", "simple"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=180,
                 )
 
-                if audit_report.returncode != 0:
+                # Check if rubocop made changes
+                status_result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                )
+                if status_result.stdout.strip():
+                    local_fixes_made = True
+                    self.logger.info("RuboCop auto-fixed some issues")
+
+                # Parse any remaining offenses
+                if rubocop_result.returncode != 0:
+                    offense_pattern = r'([^:]+):(\d+):\d+:\s+(\w):\s+(.+)'
+                    for match in re.finditer(offense_pattern, rubocop_result.stdout):
+                        severity = IssueSeverity.HIGH if match.group(3) == 'E' else IssueSeverity.MEDIUM
+                        self._add_issue(
+                            severity,
+                            IssueType.LINT_ERROR,
+                            f"{match.group(4)}",
+                            file=match.group(1),
+                        )
+
+                # 4. Brakeman security scan
+                self.logger.info("Running bundle exec brakeman...")
+                brakeman_result = subprocess.run(
+                    ["bundle", "exec", "brakeman", "-q", "--no-pager", "--format", "json"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+
+                if brakeman_result.returncode != 0:
                     try:
-                        audit_data = json.loads(audit_report.stdout)
-                        vulns = audit_data.get("vulnerabilities", {})
-                        for pkg, info in list(vulns.items())[:5]:
-                            severity = info.get("severity", "unknown")
-                            issue_severity = IssueSeverity.CRITICAL if severity in ["critical", "high"] else IssueSeverity.MEDIUM
+                        brakeman_data = json.loads(brakeman_result.stdout)
+                        for warning in brakeman_data.get("warnings", [])[:5]:
                             self._add_issue(
-                                issue_severity,
-                                IssueType.VULNERABLE_DEPENDENCY,
-                                f"Vulnerability in {pkg}: {severity}",
-                                details={"package": pkg, "severity": severity, "via": info.get("via", [])[:2]},
+                                IssueSeverity.HIGH,
+                                IssueType.SECURITY_ISSUE,
+                                f"Brakeman: {warning.get('message', 'Security issue')}",
+                                file=warning.get("file"),
+                                details=warning,
                             )
                     except json.JSONDecodeError:
                         pass
 
-                # 3. Check for and run typecheck
-                pkg_json_path = os.path.join(tmpdir, "package.json")
-                if os.path.exists(pkg_json_path):
-                    with open(pkg_json_path) as f:
-                        pkg_data = json.load(f)
-
-                    scripts = pkg_data.get("scripts", {})
-
-                    if "typecheck" in scripts or "type-check" in scripts:
-                        script_name = "typecheck" if "typecheck" in scripts else "type-check"
-                        self.logger.info(f"Running npm run {script_name}...")
-                        typecheck_result = subprocess.run(
-                            ["npm", "run", script_name],
-                            cwd=tmpdir,
-                            capture_output=True,
-                            text=True,
-                            timeout=180,
-                        )
-
-                        if typecheck_result.returncode != 0:
-                            errors = self._parse_typescript_errors(
-                                typecheck_result.stderr + typecheck_result.stdout
-                            )
-                            for error in errors[:5]:
-                                self._add_issue(
-                                    IssueSeverity.HIGH,
-                                    IssueType.TYPECHECK_ERROR,
-                                    error.get("message", "Type error"),
-                                    file=error.get("file"),
-                                    details=error,
-                                )
-
-                    # 4. Run lint --fix
-                    if "lint" in scripts:
-                        self.logger.info("Running npm run lint -- --fix...")
-                        lint_result = subprocess.run(
-                            ["npm", "run", "lint", "--", "--fix"],
-                            cwd=tmpdir,
-                            capture_output=True,
-                            text=True,
-                            timeout=180,
-                        )
-
-                        # Check if lint made changes
-                        status_result = subprocess.run(
-                            ["git", "status", "--porcelain"],
-                            cwd=tmpdir,
-                            capture_output=True,
-                            text=True,
-                        )
-                        if status_result.stdout.strip():
-                            local_fixes_made = True
-                            self.logger.info("Lint auto-fixed some issues")
-
-                        if lint_result.returncode != 0:
-                            # Parse lint errors
-                            errors = self._parse_lint_errors(
-                                lint_result.stderr + lint_result.stdout
-                            )
-                            for error in errors[:5]:
-                                self._add_issue(
-                                    IssueSeverity.MEDIUM,
-                                    IssueType.LINT_ERROR,
-                                    error.get("message", "Lint error"),
-                                    file=error.get("file"),
-                                    details=error,
-                                )
-
-                # 5. npm run build
-                self.logger.info("Running npm run build...")
-                build_result = subprocess.run(
-                    ["npm", "run", "build"],
+                # 5. Database setup and RSpec tests
+                self.logger.info("Running bundle exec rspec...")
+                test_result = subprocess.run(
+                    ["bundle", "exec", "rspec", "--format", "progress"],
                     cwd=tmpdir,
                     capture_output=True,
                     text=True,
-                    timeout=600,
+                    timeout=300,
+                    env={**os.environ, "RAILS_ENV": "test"},
+                )
+
+                if test_result.returncode != 0:
+                    # Parse RSpec failures
+                    failure_pattern = r'rspec\s+([^\s:]+):(\d+)'
+                    for match in re.finditer(failure_pattern, test_result.stdout):
+                        self._add_issue(
+                            IssueSeverity.HIGH,
+                            IssueType.TEST_FAILURE,
+                            f"Test failed at line {match.group(2)}",
+                            file=match.group(1),
+                        )
+                else:
+                    self.logger.info("All tests passed!")
+
+                # 6. Asset precompilation (production build check)
+                self.logger.info("Running assets:precompile...")
+                build_result = subprocess.run(
+                    ["bundle", "exec", "rails", "assets:precompile"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env={**os.environ, "RAILS_ENV": "production", "SECRET_KEY_BASE_DUMMY": "1"},
                 )
 
                 if build_result.returncode != 0:
-                    errors = self._parse_build_errors(build_result.stderr + build_result.stdout)
-
-                    for error in errors[:10]:
-                        self._add_issue(
-                            IssueSeverity.CRITICAL,
-                            IssueType.BUILD_ERROR,
-                            error.get("message", "Build error"),
-                            file=error.get("file"),
-                            details=error,
-                        )
-
-                    if not errors:
-                        self._add_issue(
-                            IssueSeverity.CRITICAL,
-                            IssueType.BUILD_ERROR,
-                            "Build failed",
-                            details={"output": build_result.stderr[:1000]},
-                        )
+                    self._add_issue(
+                        IssueSeverity.CRITICAL,
+                        IssueType.BUILD_ERROR,
+                        "Asset precompilation failed",
+                        details={"stderr": build_result.stderr[:500]},
+                    )
                     return
 
                 self.logger.info("Build passed!")
-
-                # 6. Run tests if they exist
-                if os.path.exists(os.path.join(tmpdir, "__tests__")) or \
-                   os.path.exists(os.path.join(tmpdir, "tests")) or \
-                   "test" in scripts:
-                    self.logger.info("Running npm test...")
-                    test_result = subprocess.run(
-                        ["npm", "test", "--", "--passWithNoTests"],
-                        cwd=tmpdir,
-                        capture_output=True,
-                        text=True,
-                        timeout=300,
-                        env={**os.environ, "CI": "true"},
-                    )
-
-                    if test_result.returncode != 0:
-                        errors = self._parse_test_errors(
-                            test_result.stderr + test_result.stdout
-                        )
-                        for error in errors[:5]:
-                            self._add_issue(
-                                IssueSeverity.HIGH,
-                                IssueType.TEST_FAILURE,
-                                error.get("message", "Test failed"),
-                                file=error.get("file"),
-                                details=error,
-                            )
-                    else:
-                        self.logger.info("All tests passed!")
 
                 # 7. Commit and push fixes if any were made
                 if local_fixes_made:
                     self.logger.info("Committing and pushing local fixes...")
 
-                    # Stage all changes
-                    subprocess.run(
-                        ["git", "add", "."],
-                        cwd=tmpdir,
-                        capture_output=True,
-                    )
+                    subprocess.run(["git", "add", "."], cwd=tmpdir, capture_output=True)
 
-                    # Commit
                     commit_result = subprocess.run(
-                        ["git", "commit", "-m", "fix(qa): Auto-remediation by QA agent\n\n- npm audit --fix\n- lint --fix"],
+                        ["git", "commit", "-m", "fix(qa): Auto-remediation by QA agent\n\n- rubocop -A"],
                         cwd=tmpdir,
                         capture_output=True,
                         text=True,
                     )
 
                     if commit_result.returncode == 0:
-                        # Push
                         push_result = subprocess.run(
                             ["git", "push"],
                             cwd=tmpdir,
@@ -1488,509 +926,6 @@ This might be intentional (Clerk for frontend, JWT for API) or accidental.""",
                 IssueType.BUILD_ERROR,
                 f"Build validation error: {e}",
             )
-
-    def _parse_build_errors(self, output: str) -> list[dict]:
-        """Parse build output to extract error details."""
-        errors = []
-
-        # TypeScript errors: src/file.ts(10,5): error TS2304
-        ts_pattern = r'([^\s]+\.tsx?)\((\d+),(\d+)\):\s*error\s+(TS\d+):\s*(.+)'
-        for match in re.finditer(ts_pattern, output):
-            errors.append({
-                "file": match.group(1),
-                "line": int(match.group(2)),
-                "column": int(match.group(3)),
-                "code": match.group(4),
-                "message": match.group(5),
-            })
-
-        # Next.js errors: Error: ... at /path/to/file.tsx
-        next_pattern = r'Error:\s*(.+?)(?:\n|$)'
-        for match in re.finditer(next_pattern, output):
-            if not any(e.get("message") == match.group(1) for e in errors):
-                errors.append({"message": match.group(1)})
-
-        return errors[:10]  # Limit to 10 errors
-
-    def _parse_typescript_errors(self, output: str) -> list[dict]:
-        """Parse TypeScript/tsc output for type errors."""
-        errors = []
-
-        # tsc style: src/file.ts(10,5): error TS2304: Cannot find name 'foo'
-        ts_pattern = r'([^\s]+\.tsx?)\((\d+),(\d+)\):\s*error\s+(TS\d+):\s*(.+)'
-        for match in re.finditer(ts_pattern, output):
-            errors.append({
-                "file": match.group(1),
-                "line": int(match.group(2)),
-                "column": int(match.group(3)),
-                "code": match.group(4),
-                "message": match.group(5),
-            })
-
-        # Next.js/webpack style: ./src/file.ts:10:5
-        nextjs_pattern = r'\./([^\s:]+):(\d+):(\d+)\n.*?Error:\s*(.+?)(?:\n|$)'
-        for match in re.finditer(nextjs_pattern, output, re.MULTILINE):
-            errors.append({
-                "file": match.group(1),
-                "line": int(match.group(2)),
-                "column": int(match.group(3)),
-                "message": match.group(4),
-            })
-
-        return errors[:10]
-
-    def _parse_lint_errors(self, output: str) -> list[dict]:
-        """Parse ESLint/Next.js lint output."""
-        errors = []
-
-        # ESLint style: /path/to/file.ts:10:5 error message rule-name
-        eslint_pattern = r'([^\s]+\.tsx?):(\d+):(\d+)\s+(warning|error)\s+(.+?)\s+(\S+)$'
-        for match in re.finditer(eslint_pattern, output, re.MULTILINE):
-            errors.append({
-                "file": match.group(1),
-                "line": int(match.group(2)),
-                "column": int(match.group(3)),
-                "severity": match.group(4),
-                "message": match.group(5),
-                "rule": match.group(6),
-            })
-
-        # Next.js lint style: ./src/file.tsx
-        # Error: message
-        nextjs_pattern = r'\./([^\n]+\.tsx?)\n\s*(?:Error|Warning):\s*(.+?)(?:\n|$)'
-        for match in re.finditer(nextjs_pattern, output):
-            if not any(e.get("file", "").endswith(match.group(1)) for e in errors):
-                errors.append({
-                    "file": match.group(1),
-                    "message": match.group(2),
-                })
-
-        return errors[:10]
-
-    def _parse_test_errors(self, output: str) -> list[dict]:
-        """Parse Jest/Vitest test output for failures."""
-        errors = []
-
-        # Jest FAIL line: FAIL src/__tests__/file.test.ts
-        fail_pattern = r'FAIL\s+([^\n]+\.test\.tsx?)'
-        for match in re.finditer(fail_pattern, output):
-            file_path = match.group(1)
-
-            # Try to find the specific error for this file
-            # Jest error: ● Test Suite › test name
-            test_error_pattern = rf'{re.escape(file_path)}.*?●\s+([^\n]+)\n\s*(.+?)(?=\n\n|\Z)'
-            test_match = re.search(test_error_pattern, output, re.DOTALL)
-            if test_match:
-                errors.append({
-                    "file": file_path,
-                    "test": test_match.group(1),
-                    "message": test_match.group(2)[:200],
-                })
-            else:
-                errors.append({
-                    "file": file_path,
-                    "message": "Test suite failed",
-                })
-
-        # Vitest style: FAIL  src/file.test.ts > test name
-        vitest_pattern = r'FAIL\s+([^\s>]+)\s+>\s+(.+?)\n(.+?)(?=\n(?:FAIL|PASS)|\Z)'
-        for match in re.finditer(vitest_pattern, output, re.DOTALL):
-            errors.append({
-                "file": match.group(1),
-                "test": match.group(2),
-                "message": match.group(3)[:200],
-            })
-
-        return errors[:10]
-
-    def _verify_page_references(
-        self, files_dict: dict[str, GeneratedFile], state: FactoryState
-    ) -> None:
-        """Verify that all referenced internal links have corresponding pages."""
-        # Collect all existing pages (app router)
-        existing_pages = set()
-        for path in files_dict.keys():
-            if path.startswith("app/") and path.endswith("/page.tsx"):
-                # Convert app/dashboard/page.tsx to /dashboard
-                route = "/" + path[4:-9]  # Remove "app/" and "/page.tsx"
-                if route == "/":
-                    route = "/"
-                existing_pages.add(route)
-            elif path == "app/page.tsx":
-                existing_pages.add("/")
-
-        # Find all internal links in components
-        referenced_routes = set()
-        route_references: dict[str, list[str]] = {}  # route -> files that reference it
-
-        for path, f in files_dict.items():
-            if not path.endswith((".tsx", ".ts", ".jsx", ".js")):
-                continue
-
-            content = f.content
-
-            # Next.js Link href="/path"
-            link_pattern = r'<Link[^>]*href=["\'](/[^"\']*)["\']'
-            for match in re.finditer(link_pattern, content):
-                route = match.group(1).split("?")[0]  # Remove query params
-                route = route.split("#")[0]  # Remove hash
-                if route and not route.startswith("/api/"):
-                    referenced_routes.add(route)
-                    if route not in route_references:
-                        route_references[route] = []
-                    route_references[route].append(path)
-
-            # router.push("/path") or router.replace("/path")
-            router_pattern = r'router\.(?:push|replace)\(["\'](/[^"\']*)["\']'
-            for match in re.finditer(router_pattern, content):
-                route = match.group(1).split("?")[0]
-                route = route.split("#")[0]
-                if route and not route.startswith("/api/"):
-                    referenced_routes.add(route)
-                    if route not in route_references:
-                        route_references[route] = []
-                    route_references[route].append(path)
-
-            # redirect("/path")
-            redirect_pattern = r'redirect\(["\'](/[^"\']*)["\']'
-            for match in re.finditer(redirect_pattern, content):
-                route = match.group(1).split("?")[0]
-                if route and not route.startswith("/api/"):
-                    referenced_routes.add(route)
-                    if route not in route_references:
-                        route_references[route] = []
-                    route_references[route].append(path)
-
-        # Check for missing pages
-        for route in referenced_routes:
-            # Normalize route for comparison
-            normalized = route.rstrip("/") or "/"
-
-            # Check if page exists (exact match or dynamic segment)
-            page_exists = False
-            for existing in existing_pages:
-                if existing == normalized:
-                    page_exists = True
-                    break
-                # Check for dynamic routes [id], [slug], etc.
-                if self._route_matches_dynamic(normalized, existing):
-                    page_exists = True
-                    break
-
-            if not page_exists:
-                refs = route_references.get(route, [])
-                issue = self._add_issue(
-                    IssueSeverity.HIGH,
-                    IssueType.MISSING_PAGE,
-                    f"Referenced page '{route}' does not exist",
-                    details={
-                        "route": route,
-                        "referenced_in": refs[:3],
-                        "existing_pages": list(existing_pages)[:10],
-                    },
-                )
-
-                # Generate the missing page
-                page_path = f"app{route}/page.tsx" if route != "/" else "app/page.tsx"
-                if page_path not in files_dict:
-                    content = self._generate_placeholder_page(route, state)
-                    if content:
-                        files_dict[page_path] = GeneratedFile(
-                            path=page_path,
-                            content=content,
-                            language="typescript",
-                        )
-                        self.files_modified.append(page_path)
-                        self._mark_issue_fixed(issue, f"Generated placeholder page at {page_path}")
-
-    def _route_matches_dynamic(self, actual: str, pattern: str) -> bool:
-        """Check if an actual route matches a dynamic route pattern."""
-        actual_parts = actual.strip("/").split("/")
-        pattern_parts = pattern.strip("/").split("/")
-
-        if len(actual_parts) != len(pattern_parts):
-            return False
-
-        for actual_part, pattern_part in zip(actual_parts, pattern_parts):
-            if pattern_part.startswith("[") and pattern_part.endswith("]"):
-                continue  # Dynamic segment, matches anything
-            if actual_part != pattern_part:
-                return False
-
-        return True
-
-    def _generate_placeholder_page(self, route: str, state: FactoryState) -> str:
-        """Generate a placeholder page for a missing route."""
-        page_name = route.strip("/").split("/")[-1] or "Home"
-        page_name = page_name.replace("-", " ").title()
-
-        return f'''export default function {page_name.replace(" ", "")}Page() {{
-  return (
-    <div className="container mx-auto py-8">
-      <h1 className="text-2xl font-bold">{page_name}</h1>
-      <p className="text-gray-600 mt-2">This page is under construction.</p>
-    </div>
-  );
-}}
-'''
-
-    def _verify_webhook_handlers(
-        self, files_dict: dict[str, GeneratedFile], state: FactoryState
-    ) -> None:
-        """Verify webhook handlers exist when webhook utilities are present."""
-        # Check for webhook-related imports/usage
-        webhook_utils_used = False
-        webhook_config_present = False
-        webhook_handlers: list[str] = []
-
-        for path, f in files_dict.items():
-            content = f.content
-
-            # Check for webhook utility usage
-            if "webhook" in content.lower():
-                # Check for Stripe webhook
-                if "stripe" in content.lower() and ("constructEvent" in content or "webhookSecret" in content.lower()):
-                    webhook_utils_used = True
-                    if "/api/" in path and "webhook" in path.lower():
-                        webhook_handlers.append(path)
-
-                # Check for webhook configuration
-                if "WEBHOOK_SECRET" in content or "webhookSecret" in content:
-                    webhook_config_present = True
-
-        # If webhook utils are used but no handlers exist
-        if webhook_utils_used and not webhook_handlers:
-            # Check if there's a stripe webhook specifically
-            stripe_webhook_path = "app/api/webhooks/stripe/route.ts"
-            if stripe_webhook_path not in files_dict:
-                issue = self._add_issue(
-                    IssueSeverity.HIGH,
-                    IssueType.MISSING_WEBHOOK_HANDLER,
-                    "Stripe webhook utilities used but no webhook handler found",
-                    details={
-                        "expected_path": stripe_webhook_path,
-                        "webhook_config_present": webhook_config_present,
-                    },
-                )
-
-                # Generate webhook handler
-                content = self._generate_stripe_webhook_handler(state)
-                if content:
-                    files_dict[stripe_webhook_path] = GeneratedFile(
-                        path=stripe_webhook_path,
-                        content=content,
-                        language="typescript",
-                    )
-                    self.files_modified.append(stripe_webhook_path)
-                    self._mark_issue_fixed(issue, f"Generated Stripe webhook handler at {stripe_webhook_path}")
-
-    def _generate_stripe_webhook_handler(self, state: FactoryState) -> str:
-        """Generate a Stripe webhook handler."""
-        return '''import { headers } from "next/headers";
-import { NextResponse } from "next/server";
-import Stripe from "stripe";
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: "2023-10-16",
-});
-
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-
-export async function POST(req: Request) {
-  const body = await req.text();
-  const signature = headers().get("stripe-signature")!;
-
-  let event: Stripe.Event;
-
-  try {
-    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
-  } catch (err) {
-    console.error("Webhook signature verification failed:", err);
-    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
-  }
-
-  try {
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object as Stripe.Checkout.Session;
-        // Handle successful checkout
-        console.log("Checkout completed:", session.id);
-        break;
-      }
-      case "customer.subscription.created":
-      case "customer.subscription.updated": {
-        const subscription = event.data.object as Stripe.Subscription;
-        // Handle subscription changes
-        console.log("Subscription updated:", subscription.id);
-        break;
-      }
-      case "customer.subscription.deleted": {
-        const subscription = event.data.object as Stripe.Subscription;
-        // Handle subscription cancellation
-        console.log("Subscription deleted:", subscription.id);
-        break;
-      }
-      case "invoice.payment_succeeded": {
-        const invoice = event.data.object as Stripe.Invoice;
-        // Handle successful payment
-        console.log("Payment succeeded:", invoice.id);
-        break;
-      }
-      case "invoice.payment_failed": {
-        const invoice = event.data.object as Stripe.Invoice;
-        // Handle failed payment
-        console.log("Payment failed:", invoice.id);
-        break;
-      }
-      default:
-        console.log(`Unhandled event type: ${event.type}`);
-    }
-
-    return NextResponse.json({ received: true });
-  } catch (err) {
-    console.error("Webhook handler error:", err);
-    return NextResponse.json(
-      { error: "Webhook handler failed" },
-      { status: 500 }
-    );
-  }
-}
-'''
-
-    # =========================================================================
-    # Helper Methods
-    # =========================================================================
-
-    def _extract_imports(self, content: str) -> list[str]:
-        """Extract import paths from TypeScript/JavaScript."""
-        patterns = [
-            r'import\s+.*?\s+from\s+["\']([^"\']+)["\']',
-            r'import\s+["\']([^"\']+)["\']',
-            r'require\s*\(\s*["\']([^"\']+)["\']\s*\)',
-        ]
-        imports = []
-        for pattern in patterns:
-            imports.extend(re.findall(pattern, content))
-        return imports
-
-    def _extract_exports(self, content: str) -> list[str]:
-        """Extract exported symbols from TypeScript/JavaScript."""
-        exports = []
-
-        # export const/let/var/function/class name
-        exports.extend(re.findall(
-            r'export\s+(?:const|let|var|function|class|type|interface)\s+(\w+)',
-            content
-        ))
-
-        # export { name, name2 }
-        bracket_exports = re.findall(r'export\s*\{([^}]+)\}', content)
-        for group in bracket_exports:
-            for item in group.split(','):
-                name = item.strip().split(' as ')[0].strip()
-                if name:
-                    exports.append(name)
-
-        # export default
-        if re.search(r'export\s+default', content):
-            exports.append('default')
-
-        return exports
-
-    def _extract_import_details(self, content: str) -> list[dict]:
-        """Extract detailed import information."""
-        imports = []
-
-        # import { a, b } from "module"
-        named_pattern = r'import\s*\{([^}]+)\}\s*from\s*["\']([^"\']+)["\']'
-        for match in re.finditer(named_pattern, content):
-            symbols = [s.strip().split(' as ')[0].strip()
-                      for s in match.group(1).split(',')]
-            imports.append({
-                "symbols": [s for s in symbols if s],
-                "source": match.group(2),
-            })
-
-        # import Default from "module"
-        default_pattern = r'import\s+(\w+)\s+from\s*["\']([^"\']+)["\']'
-        for match in re.finditer(default_pattern, content):
-            if match.group(1) not in ['type', 'typeof']:
-                imports.append({
-                    "symbols": ["default"],
-                    "source": match.group(2),
-                })
-
-        return imports
-
-    def _get_package_name(self, import_path: str) -> Optional[str]:
-        """Extract package name from import path."""
-        if import_path.startswith(".") or import_path.startswith("/"):
-            return None
-
-        # Handle scoped packages (@org/pkg)
-        if import_path.startswith("@"):
-            parts = import_path.split("/")
-            if len(parts) >= 2:
-                return f"{parts[0]}/{parts[1]}"
-
-        # Regular package
-        return import_path.split("/")[0]
-
-    def _is_builtin_module(self, name: str) -> bool:
-        """Check if a module is a Node.js builtin."""
-        builtins = {
-            'assert', 'buffer', 'child_process', 'cluster', 'console',
-            'constants', 'crypto', 'dgram', 'dns', 'domain', 'events',
-            'fs', 'http', 'https', 'module', 'net', 'os', 'path',
-            'process', 'punycode', 'querystring', 'readline', 'repl',
-            'stream', 'string_decoder', 'timers', 'tls', 'tty', 'url',
-            'util', 'v8', 'vm', 'zlib', 'react', 'react-dom', 'next',
-        }
-        return name in builtins or name.startswith('node:')
-
-    def _resolve_import_path(
-        self,
-        from_file: str,
-        import_source: str,
-        files_dict: dict[str, GeneratedFile],
-    ) -> Optional[str]:
-        """Resolve a relative import to an absolute file path."""
-        import os
-
-        if not import_source.startswith("."):
-            return None
-
-        # Get directory of importing file
-        from_dir = os.path.dirname(from_file)
-
-        # Resolve relative path
-        resolved = os.path.normpath(os.path.join(from_dir, import_source))
-
-        # Try common extensions
-        for ext in ["", ".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.tsx"]:
-            candidate = resolved + ext
-            if candidate in files_dict:
-                return candidate
-
-        return None
-
-    def _version_satisfies(self, current: str, required: str) -> bool:
-        """Check if current version satisfies required minimum."""
-        current_clean = current.lstrip("^~>=<")
-        required_clean = required.lstrip("^~>=<")
-
-        try:
-            current_parts = [int(x) for x in current_clean.split(".")[:3]]
-            required_parts = [int(x) for x in required_clean.split(".")[:3]]
-
-            while len(current_parts) < 3:
-                current_parts.append(0)
-            while len(required_parts) < 3:
-                required_parts.append(0)
-
-            return current_parts >= required_parts
-        except (ValueError, IndexError):
-            return False
 
     def _issue_to_dict(self, issue: QAIssue) -> dict:
         """Convert QAIssue to dictionary."""

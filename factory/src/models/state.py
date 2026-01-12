@@ -88,14 +88,14 @@ class BuildPreferences:
 
     tech_stack: dict[str, str] = field(
         default_factory=lambda: {
-            "frontend": "nextjs",
-            "backend": "python",
+            "frontend": "rails",
+            "backend": "ruby",
             "database": "postgresql",
         }
     )
-    hosting_preference: str = "vercel"
-    database_preference: str = "neon"
-    auth_preference: str = "clerk"
+    hosting_preference: str = "railway"
+    database_preference: str = "railway"
+    auth_preference: str = "devise"
     payments_preference: str = "stripe"
 
 

@@ -407,3 +407,24 @@ If you need functionality from these files, import from them instead of recreati
         pattern = r"import\s+.*?from\s+['\"]([^'\"]+)['\"]"
         imports.extend(re.findall(pattern, content))
         return imports
+
+    @staticmethod
+    def extract_exports_from_ruby(content: str) -> list[str]:
+        """Extract class, module, and method names from Ruby content."""
+        import re
+
+        exports = []
+
+        # Match: class ClassName
+        exports.extend(re.findall(r"class\s+(\w+(?:::\w+)*)", content))
+
+        # Match: module ModuleName
+        exports.extend(re.findall(r"module\s+(\w+(?:::\w+)*)", content))
+
+        # Match: def method_name (public methods at class level)
+        exports.extend(re.findall(r"^\s*def\s+(\w+)", content, re.MULTILINE))
+
+        # Match: scope :name (Rails scopes)
+        exports.extend(re.findall(r"scope\s+:(\w+)", content))
+
+        return list(set(exports))
