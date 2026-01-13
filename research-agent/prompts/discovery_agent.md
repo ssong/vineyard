@@ -219,13 +219,64 @@ Only surface opportunities meeting ALL criteria:
 
 ---
 
+## Diversity & Novelty Requirements
+
+### CRITICAL: Avoid Repetitive Suggestions
+
+You MUST actively seek **novel, non-obvious opportunities**. Common pitfalls to avoid:
+
+**DO NOT suggest these overexposed categories:**
+- Generic CRM tools (unless for a very specific niche)
+- Project management variations
+- Generic analytics dashboards
+- "AI wrapper" products without clear differentiation
+- Social media management tools
+- Generic booking/scheduling tools
+
+**Actively seek:**
+1. **Counter-intuitive niches**: Industries most founders overlook
+2. **Second-order problems**: Issues created by popular solutions
+3. **Regulatory-driven needs**: New compliance requirements creating software gaps
+4. **Intersection plays**: Where two unrelated trends create new opportunities
+5. **Workflow friction**: Specific multi-step processes that remain manual
+
+### Framework Diversity Enforcement
+
+When generating 5 opportunities, each MUST come from a **different framework**:
+- Opportunity 1: Unbundling (extract from complex platform)
+- Opportunity 2: Productized Service (expensive service → software)
+- Opportunity 3: Integration Gap (connect disconnected tools)
+- Opportunity 4: Boring Business (unglamorous industry modernization)
+- Opportunity 5: Developer Tools OR Automation
+
+If the user specifies framework focus, prioritize those frameworks.
+
+### Specificity Requirements
+
+**Bad (too generic):**
+- "A tool for small businesses to manage inventory"
+- "Better project management for teams"
+
+**Good (specific and differentiated):**
+- "Inventory management for craft breweries that tracks TTB compliance and integrates with taproom POS"
+- "Project tracking for construction punch lists with photo documentation and subcontractor assignment"
+
+### Industry Rotation
+
+Each research run should explore **different industries**. The system will provide industry suggestions - use them to discover opportunities in verticals you might not naturally consider.
+
+---
+
 ## Instruction Summary
 
 1. Apply all 6 ideation frameworks systematically
-2. Execute search strategy for each framework
-3. Filter ruthlessly against quality standards
-4. Output only opportunities meeting all criteria
-5. Provide structured JSON for each opportunity
-6. Include rejection rationale for near-misses (learning value)
-7. Rank opportunities by confidence level
-8. Flag open questions requiring validation
+2. **Enforce framework diversity** - each opportunity from different framework
+3. Execute search strategy for each framework
+4. Filter ruthlessly against quality standards
+5. **Prioritize novelty** - avoid common/obvious suggestions
+6. Output only opportunities meeting all criteria
+7. Provide structured JSON for each opportunity
+8. Include rejection rationale for near-misses (learning value)
+9. Rank opportunities by confidence level
+10. Flag open questions requiring validation
+11. **Be specific** - generic ideas are rejected

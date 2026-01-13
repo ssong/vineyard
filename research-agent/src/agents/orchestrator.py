@@ -4,20 +4,56 @@ import logging
 import time
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from src.agents.discovery import DiscoveryAgent
 from src.agents.scoring import ScoringAgent
 from src.agents.validation import ValidationAgent
 from src.config import settings
+from src.config.diversity import DiversityConfig
 from src.models import ResearchReport
 from src.slack.interactions import store_report
 
 logger = logging.getLogger(__name__)
 
 
-def run_research_pipeline() -> ResearchReport:
+def build_diversity_config() -> DiversityConfig:
+    """Build diversity configuration from settings."""
+    config = DiversityConfig()
+
+    # Parse focus frameworks from settings
+    if settings.focus_frameworks:
+        config.focus_frameworks = [
+            f.strip() for f in settings.focus_frameworks.split(",")
+            if f.strip()
+        ]
+
+    # Parse focus industries from settings
+    if settings.focus_industries:
+        config.focus_industries = [
+            i.strip() for i in settings.focus_industries.split(",")
+            if i.strip()
+        ]
+
+    # Apply other settings
+    config.industries_per_run = settings.industries_per_run
+    config.total_queries = settings.queries_per_run
+
+    return config
+
+
+def run_research_pipeline(
+    focus_frameworks: Optional[list[str]] = None,
+    focus_industries: Optional[list[str]] = None,
+) -> ResearchReport:
     """
     Run the complete research pipeline.
+
+    Args:
+        focus_frameworks: Optional list of framework IDs to focus on
+            (unbundling, productized_service, integration, boring_business,
+             developer_tools, automation)
+        focus_industries: Optional list of industries to focus on
 
     Returns:
         ResearchReport with top opportunities
@@ -27,13 +63,26 @@ def run_research_pipeline() -> ResearchReport:
 
     logger.info(f"Starting research pipeline (report_id: {report_id})")
 
-    # Initialize agents
-    discovery_agent = DiscoveryAgent()
+    # Build diversity configuration
+    diversity_config = build_diversity_config()
+
+    # Apply runtime overrides
+    if focus_frameworks:
+        diversity_config.focus_frameworks = focus_frameworks
+        logger.info(f"Focusing on frameworks: {focus_frameworks}")
+    if focus_industries:
+        diversity_config.focus_industries = focus_industries
+        logger.info(f"Focusing on industries: {focus_industries}")
+
+    # Initialize agents with diversity config
+    discovery_agent = DiscoveryAgent(config=diversity_config)
     validation_agent = ValidationAgent()
     scoring_agent = ScoringAgent()
 
-    # Run pipeline
-    context = {}
+    # Run pipeline with diversity context
+    context = {
+        "diversity_config": diversity_config,
+    }
 
     # Phase 1: Discovery
     logger.info("Phase 1: Discovery")
@@ -53,6 +102,12 @@ def run_research_pipeline() -> ResearchReport:
 
     duration_seconds = int(time.time() - start_time)
 
+    # Extract run metadata from discovery phase
+    run_metadata = context.get("run_metadata", {})
+    queries_used = run_metadata.get("queries_used", [])
+    industries_sampled = run_metadata.get("industries_sampled", [])
+    frameworks_used = run_metadata.get("frameworks_used", [])
+
     report = ResearchReport(
         report_id=report_id,
         generated_at=datetime.utcnow(),
@@ -70,6 +125,10 @@ def run_research_pipeline() -> ResearchReport:
             "Competitor data may be incomplete",
         ],
     )
+
+    # Log diversity info for debugging
+    logger.info(f"Run metadata - Queries: {len(queries_used)}, "
+                f"Industries: {industries_sampled}, Frameworks: {frameworks_used}")
 
     # Store for later retrieval
     store_report(report_id, report)

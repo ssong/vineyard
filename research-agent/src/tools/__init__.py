@@ -1,5 +1,5 @@
 """Tools package."""
 
-from . import llm, web_search
+from . import history, llm, web_search
 
-__all__ = ["llm", "web_search"]
+__all__ = ["history", "llm", "web_search"]
