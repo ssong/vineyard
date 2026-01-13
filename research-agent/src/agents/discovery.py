@@ -59,7 +59,7 @@ FRAMEWORKS = [
         "id": "developer_tools",
         "name": "Developer Tools",
         "description": "Productivity tools for programmers",
-        "category": OpportunityCategory.DEVELOPER_TOOLS,
+        "category": OpportunityCategory.DEV_TOOLS,
     },
     {
         "id": "automation",
