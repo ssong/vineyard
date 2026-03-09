@@ -419,6 +419,63 @@ def ensure_labels(team_id: str, label_names: list[str]) -> dict[str, str]:
     return result
 
 
+def create_project(
+    name: str,
+    description: str = "",
+    team_ids: list[str] | None = None,
+) -> dict:
+    """Create a new Linear project.
+
+    Args:
+        name: Project name
+        description: Project description
+        team_ids: List of team IDs to associate (uses first team if not provided)
+
+    Returns:
+        Dict with id, name, url keys
+    """
+    # If no team IDs provided, use the first team
+    if not team_ids:
+        teams = get_teams()
+        if teams:
+            team_ids = [teams[0]["id"]]
+        else:
+            logger.error("No teams found in Linear workspace")
+            return {}
+
+    query = """
+    mutation CreateProject($input: ProjectCreateInput!) {
+        projectCreate(input: $input) {
+            success
+            project {
+                id
+                name
+                url
+                state
+            }
+        }
+    }
+    """
+    variables = {
+        "input": {
+            "name": name,
+            "description": description[:255],
+            "teamIds": team_ids,
+        }
+    }
+
+    data = _make_request(query, variables)
+    result = data.get("projectCreate", {})
+
+    if result.get("success"):
+        project = result.get("project", {})
+        logger.info(f"Created Linear project: {project.get('name')} ({project.get('id')})")
+        return project
+
+    logger.error(f"Failed to create Linear project: {data}")
+    return {}
+
+
 def get_project(project_id: str) -> dict:
     """Get project details."""
     query = """
