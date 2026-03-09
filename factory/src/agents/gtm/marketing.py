@@ -4,11 +4,7 @@ from typing import Any
 
 from src.agents.base import BaseAgent
 from src.config.prompts import MARKETING_AGENT_PROMPT
-from src.models import (
-    EmailSequence,
-    FactoryState,
-    SocialContent,
-)
+from src.models import FactoryState
 from src.tools import llm
 
 
@@ -25,20 +21,19 @@ class MarketingAgent(BaseAgent):
         self.log_start()
 
         prd_input = state.handoff.prd_input
-        research = self.get_previous_output(state, "prd_analysis")
+        prd_analysis = self.get_previous_output(state, "prd_analysis")
 
         # Generate landing page copy
-        landing_copy = self._generate_landing_page_copy(prd_input, research)
+        landing_copy = self._generate_landing_page_copy(prd_input, prd_analysis)
 
         # Generate email sequences
-        email_sequences = self._generate_email_sequences(prd_input, research)
+        email_sequences = self._generate_email_sequences(prd_input, prd_analysis)
 
         # Generate social content
         social = self._generate_social_content(prd_input)
 
         # Generate blog post outlines
-        blog_outlines = self._generate_blog_outlines(prd_input, research)
-        # Note: Linear task tracking is now handled at the runner level
+        blog_outlines = self._generate_blog_outlines(prd_input, prd_analysis)
 
         output = {
             "landing_page_copy": landing_copy,
@@ -50,12 +45,12 @@ class MarketingAgent(BaseAgent):
         self.log_complete()
         return output
 
-    def _generate_landing_page_copy(self, prd_input, research) -> dict:
+    def _generate_landing_page_copy(self, prd_input, prd_analysis) -> dict:
         """Generate landing page copy."""
-        personas_text = ""
-        if research and research.personas:
-            personas_text = "\n".join(
-                [f"- {p.name}: {p.role}" for p in research.personas]
+        target_users_text = ""
+        if prd_analysis and prd_analysis.target_users:
+            target_users_text = "\n".join(
+                [f"- {u}" for u in prd_analysis.target_users]
             )
 
         user_prompt = f"""Generate landing page copy for:
@@ -63,8 +58,8 @@ class MarketingAgent(BaseAgent):
 PRODUCT: {prd_input.name}
 PRD: {prd_input.prd_text[:1000]}
 
-PERSONAS:
-{personas_text}
+TARGET USERS:
+{target_users_text}
 
 Generate JSON with landing page sections:
 {{
@@ -110,7 +105,7 @@ Generate JSON with landing page sections:
             self.logger.error(f"Failed to generate landing copy: {e}")
             return {"hero": {"headline": prd_input.name}}
 
-    def _generate_email_sequences(self, prd_input, research) -> list[EmailSequence]:
+    def _generate_email_sequences(self, prd_input, prd_analysis) -> list[dict]:
         """Generate email sequences."""
         user_prompt = f"""Generate email sequences for:
 
@@ -149,25 +144,21 @@ Include:
         try:
             result = llm.generate_json(MARKETING_AGENT_PROMPT, user_prompt)
             sequences = []
-
             for seq in result.get("sequences", []):
                 for email in seq.get("emails", []):
-                    sequences.append(
-                        EmailSequence(
-                            name=email.get("name", "Email"),
-                            subject=email.get("subject", ""),
-                            body_html=email.get("body_html", ""),
-                            send_delay_hours=email.get("send_delay_hours", 0),
-                        )
-                    )
-
+                    sequences.append({
+                        "name": email.get("name", "Email"),
+                        "subject": email.get("subject", ""),
+                        "body_html": email.get("body_html", ""),
+                        "send_delay_hours": email.get("send_delay_hours", 0),
+                    })
             return sequences
 
         except Exception as e:
             self.logger.error(f"Failed to generate email sequences: {e}")
             return []
 
-    def _generate_social_content(self, prd_input) -> SocialContent:
+    def _generate_social_content(self, prd_input) -> dict:
         """Generate social media content."""
         user_prompt = f"""Generate social media content for launch:
 
@@ -190,30 +181,25 @@ Generate JSON:
 """
 
         try:
-            result = llm.generate_json(MARKETING_AGENT_PROMPT, user_prompt)
-            return SocialContent(
-                twitter_thread=result.get("twitter_thread", []),
-                linkedin_post=result.get("linkedin_post", ""),
-                twitter_launch_tweet=result.get("twitter_launch_tweet", ""),
-            )
+            return llm.generate_json(MARKETING_AGENT_PROMPT, user_prompt)
         except Exception as e:
             self.logger.error(f"Failed to generate social content: {e}")
-            return SocialContent(
-                twitter_thread=[],
-                linkedin_post="",
-                twitter_launch_tweet="",
-            )
+            return {
+                "twitter_thread": [],
+                "linkedin_post": "",
+                "twitter_launch_tweet": "",
+            }
 
-    def _generate_blog_outlines(self, prd_input, research) -> list[dict]:
+    def _generate_blog_outlines(self, prd_input, prd_analysis) -> list[dict]:
         """Generate SEO blog post outlines."""
-        seo_keywords = []
-        if research and research.seo_strategy:
-            seo_keywords = research.seo_strategy.primary_keywords[:5]
+        core_problem = ""
+        if prd_analysis and prd_analysis.core_problem:
+            core_problem = prd_analysis.core_problem
 
         user_prompt = f"""Generate blog post outlines for SEO:
 
 PRODUCT: {prd_input.name}
-TARGET KEYWORDS: {seo_keywords}
+CORE PROBLEM: {core_problem}
 PRD: {prd_input.prd_text[:500]}
 
 Generate JSON with blog outlines:
