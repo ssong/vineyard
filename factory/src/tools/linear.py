@@ -913,24 +913,23 @@ def update_project_status(
 
 # Phase metadata for creating upfront issues
 PHASE_ISSUE_CONFIG = {
-    "research_enrichment": {
-        "title": "[Phase] Research Enrichment",
-        "description": "Deep-dive research to enrich the opportunity with additional market data, competitor analysis, and validation signals.",
-        "label": "research",
+    "prd_analysis": {
+        "title": "[Phase] PRD Analysis",
+        "description": "Analyze the submitted PRD, identify gaps, ask clarifying questions, and produce an enriched PRD.",
+        "label": "product",
         "tasks": [
-            "Analyze competitor landscape",
-            "Validate market size assumptions",
-            "Identify key differentiators",
-            "Research pricing benchmarks",
+            "Analyze PRD for gaps",
+            "Run clarification Q&A",
+            "Enrich PRD with structured content",
         ],
     },
     "design": {
         "title": "[Phase] Product Design",
-        "description": "Create product requirements, user flows, and feature specifications.",
+        "description": "Enhance PRD with design specifications, user flows, and feature specs.",
         "label": "design",
         "tasks": [
-            "Draft product requirements document",
-            "Design user flows and wireframes",
+            "Enhance PRD with design specs",
+            "Design user flows",
             "Define P0/P1/P2 features",
             "Create UI/UX specifications",
         ],
@@ -959,35 +958,11 @@ PHASE_ISSUE_CONFIG = {
     },
     "launch_prep": {
         "title": "[Phase] Launch Preparation",
-        "description": "Marketing content, landing pages, and launch materials.",
+        "description": "Marketing content and launch checklist.",
         "label": "marketing",
         "tasks": [
             "Create marketing copy",
-            "Design landing page",
-            "Prepare launch emails",
-            "Set up analytics",
-        ],
-    },
-    "launch": {
-        "title": "[Phase] Launch",
-        "description": "Deploy to production and execute launch plan.",
-        "label": "launch",
-        "tasks": [
-            "Deploy to production",
-            "Execute launch checklist",
-            "Monitor initial metrics",
-            "Address launch issues",
-        ],
-    },
-    "growth": {
-        "title": "[Phase] Growth & Support",
-        "description": "Growth experiments, customer support setup, and ongoing optimization.",
-        "label": "growth",
-        "tasks": [
-            "Set up growth experiments",
-            "Create support documentation",
-            "Configure feedback channels",
-            "Plan iteration roadmap",
+            "Prepare launch checklist",
         ],
     },
 }
@@ -1017,7 +992,7 @@ def create_factory_issues(
         Dict mapping phase names to their issue info:
         {
             "root": {"id": "...", "identifier": "...", "url": "..."},
-            "research_enrichment": {"id": "...", "identifier": "...", "tasks": [...]},
+            "prd_analysis": {"id": "...", "identifier": "...", "tasks": [...]},
             ...
         }
     """

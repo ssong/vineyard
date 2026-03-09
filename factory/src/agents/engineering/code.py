@@ -1,5 +1,11 @@
-"""Code Agent - Rails code generation from specs."""
+"""Code Agent - Rails code generation from specs.
 
+Supports two modes:
+1. Agent SDK mode: Claude autonomously generates files using tools (higher quality)
+2. Direct API mode: Sequential generate_json calls (fallback)
+"""
+
+import logging
 from typing import Any
 
 from src.agents.base import BaseAgent
@@ -13,6 +19,8 @@ from src.models import (
 from src.tools import github, llm
 from src.tools.generation_context import GenerationContext
 
+logger = logging.getLogger(__name__)
+
 
 class CodeAgent(BaseAgent):
     """Agent for generating Ruby on Rails application code."""
@@ -24,101 +32,34 @@ class CodeAgent(BaseAgent):
         """
         Generate Rails code files from technical specifications.
 
-        Uses GenerationContext to:
-        1. Track all generated files to prevent duplicates
-        2. Pass folder structure context to each generation step
-        3. Provide available components/utilities for imports
+        Uses Agent SDK when available for iterative, self-reviewing code generation.
+        Falls back to sequential generate_json calls otherwise.
         """
         self.log_start()
 
         # Initialize subtask tracking
         self.init_subtask_tracking(state, parent_phase="build")
 
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
         prefs = state.handoff.build_preferences
         spec = self.get_previous_output(state, "spec")
         design = self.get_previous_output(state, "design")
 
-        # Initialize generation context for tracking files
-        ctx = GenerationContext()
-
         try:
-            # Generate in order of dependencies with subtask tracking
-            self.run_step(
-                "project_structure",
-                "Generate project structure",
-                lambda: self._generate_project_structure(ctx, opp, prefs),
-                "Gemfile, configs, initializers",
-            )
-
-            self.run_step(
-                "models_migrations",
-                "Generate models and migrations",
-                lambda: self._generate_models_and_migrations(ctx, spec, prefs),
-                "ActiveRecord models, database migrations",
-            )
-
-            self.run_step(
-                "services",
-                "Generate service objects",
-                lambda: self._generate_services(ctx, prefs, spec),
-                "Business logic, jobs, mailers",
-            )
-
-            self.run_step(
-                "controllers",
-                "Generate controllers",
-                lambda: self._generate_controllers(ctx, spec, prefs),
-                "Application and API controllers",
-            )
-
-            self.run_step(
-                "view_components",
-                "Generate ViewComponents",
-                lambda: self._generate_view_components(ctx, opp, prefs, design),
-                "Reusable UI components",
-            )
-
-            self.run_step(
-                "views",
-                "Generate views and layouts",
-                lambda: self._generate_views(ctx, opp, prefs, spec, design),
-                "ERB templates, Stimulus controllers",
-            )
-
-            # Convert context files to GeneratedFile list
-            all_files = [
-                GeneratedFile(
-                    path=entry.path,
-                    content=entry.content,
-                    language=entry.language,
-                )
-                for entry in ctx.get_all_files()
-            ]
-
-            self.logger.info(f"Generated {len(all_files)} unique files")
-
-            # Create GitHub repository
-            repo_info = self.run_step(
-                "github_repo",
-                "Create GitHub repository",
-                lambda: self._create_github_repo(opp, all_files),
-                "Push code to GitHub",
-            )
-
-            output = {
-                "files": all_files,
-                "github_repo_url": repo_info.get("url", ""),
-                "github_owner": repo_info.get("owner", ""),
-                "github_repo_name": repo_info.get("name", ""),
-                "file_count": len(all_files),
-                "folder_structure": ctx.get_folder_structure(),
-            }
+            # Try Agent SDK mode first
+            from src.tools.agent_runner import is_sdk_available
+            if is_sdk_available():
+                self.logger.info("Using Agent SDK for code generation")
+                output = self._run_with_agent_sdk(state, prd_input, prefs, spec, design)
+            else:
+                self.logger.info("Using direct API for code generation")
+                output = self._run_direct(state, prd_input, prefs, spec, design)
 
             # Complete agent task
+            file_count = output.get("file_count", 0)
             self.complete_agent_task(
-                f"Generated {len(all_files)} files for {opp.name}",
-                [repo_info.get("url", "")] if repo_info.get("url") else None,
+                f"Generated {file_count} files for {prd_input.name}",
+                [output.get("github_repo_url", "")] if output.get("github_repo_url") else None,
             )
 
             self.log_complete()
@@ -128,14 +69,228 @@ class CodeAgent(BaseAgent):
             self.fail_agent_task(str(e))
             raise
 
+    # =========================================================================
+    # Agent SDK Mode
+    # =========================================================================
+
+    def _run_with_agent_sdk(self, state, prd_input, prefs, spec, design) -> dict[str, Any]:
+        """Generate code using the Agent SDK with custom tools.
+
+        Claude gets tools to write files, read specs, and review its own output.
+        This produces higher quality code because Claude can:
+        - See the full spec and design before generating
+        - Review previously generated files for consistency
+        - Iterate on files that reference each other
+        """
+        from src.tools import agent_tools
+        from src.tools.agent_runner import run_agent
+
+        # Reset tool state and set context
+        agent_tools.reset_state()
+        agent_tools.set_context(
+            spec=spec,
+            design=design,
+            prd_input=prd_input,
+            build_prefs=prefs,
+        )
+
+        # Get custom tools
+        tools = agent_tools.get_code_gen_tools()
+
+        # Build the generation prompt
+        prompt = self._build_agent_prompt(prd_input, prefs, spec, design)
+
+        # Run the agent
+        result = run_agent(
+            prompt=prompt,
+            system_prompt=CODE_AGENT_PROMPT,
+            tools=tools,
+            model="sonnet",
+            max_turns=30,
+            max_budget_usd=2.0,
+        )
+
+        self.logger.info(f"Agent SDK completed in {result.turns} turns, cost: ${result.cost_usd:.4f}")
+
+        # Collect generated files
+        files_dict = agent_tools.get_generated_files()
+        all_files = [
+            GeneratedFile(
+                path=path,
+                content=info["content"],
+                language=info["language"],
+            )
+            for path, info in files_dict.items()
+        ]
+
+        self.logger.info(f"Agent generated {len(all_files)} unique files")
+
+        # Create GitHub repository
+        repo_info = self._create_github_repo(prd_input, all_files)
+
+        return {
+            "files": all_files,
+            "github_repo_url": repo_info.get("url", ""),
+            "github_owner": repo_info.get("owner", ""),
+            "github_repo_name": repo_info.get("name", ""),
+            "file_count": len(all_files),
+            "generation_mode": "agent_sdk",
+            "agent_turns": result.turns,
+            "agent_cost_usd": result.cost_usd,
+        }
+
+    def _build_agent_prompt(self, prd_input, prefs, spec, design) -> str:
+        """Build the prompt for the Agent SDK code generation."""
+        spec_summary = ""
+        if spec:
+            if hasattr(spec, "api_endpoints") and spec.api_endpoints:
+                endpoints = [f"  - {e.method} {e.path}: {e.description}" for e in spec.api_endpoints[:10]]
+                spec_summary += "API Endpoints:\n" + "\n".join(endpoints) + "\n\n"
+            if hasattr(spec, "database_schema") and spec.database_schema:
+                tables = [f"  - {t.name}: {t.description}" for t in spec.database_schema[:10]]
+                spec_summary += "Database Tables:\n" + "\n".join(tables) + "\n\n"
+
+        design_summary = ""
+        if design and hasattr(design, "features"):
+            features = [f"  - {f.name} ({f.priority}): {f.description[:80]}" for f in design.features[:8]]
+            design_summary = "Features:\n" + "\n".join(features) + "\n\n"
+
+        return f"""Generate a complete Ruby on Rails 7.1 application for the following product.
+
+## Product
+- **Name**: {prd_input.name}
+- **Description**: {prd_input.prd_text[:1000]}
+
+## Tech Stack
+- **Framework**: Ruby on Rails 7.1
+- **Auth**: {prefs.auth_preference}
+- **Payments**: {prefs.payments_preference}
+- **Hosting**: {prefs.hosting_preference}
+- **Database**: {prefs.database_preference}
+
+## Specification Summary
+{spec_summary if spec_summary else "(Use get_spec tool for full specification)"}
+
+## Design Summary
+{design_summary if design_summary else "(Use get_design tool for full design)"}
+
+## Instructions
+
+1. First, use `get_spec` and `get_design` to read the full technical specification and design
+2. Generate files in dependency order:
+   a. Project config (Gemfile, database.yml, routes.rb, initializers)
+   b. Models and migrations (based on database schema)
+   c. Service objects and jobs
+   d. Controllers (based on API endpoints)
+   e. ViewComponents (reusable UI components with Tailwind)
+   f. Views and layouts (using Hotwire, Turbo, Stimulus)
+3. After generating each batch, use `list_generated_files` to review what you've created
+4. Use `read_generated_file` to verify consistency between related files (e.g., model associations match migration foreign keys)
+5. Use `write_file` for every file you generate
+
+Generate production-ready, complete files. Include:
+- Proper ActiveRecord associations and validations
+- Strong parameters in controllers
+- Turbo Frame/Stream responses
+- Stimulus controllers for interactivity
+- ViewComponent classes with Tailwind styling
+- RSpec-ready structure
+
+Generate ALL files needed for a working Rails application. Be thorough."""
+
+    # =========================================================================
+    # Direct API Mode (fallback)
+    # =========================================================================
+
+    def _run_direct(self, state, prd_input, prefs, spec, design) -> dict[str, Any]:
+        """Generate code using direct API calls (original approach)."""
+        ctx = GenerationContext()
+
+        # Generate in order of dependencies with subtask tracking
+        self.run_step(
+            "project_structure",
+            "Generate project structure",
+            lambda: self._generate_project_structure(ctx, prd_input, prefs),
+            "Gemfile, configs, initializers",
+        )
+
+        self.run_step(
+            "models_migrations",
+            "Generate models and migrations",
+            lambda: self._generate_models_and_migrations(ctx, spec, prefs),
+            "ActiveRecord models, database migrations",
+        )
+
+        self.run_step(
+            "services",
+            "Generate service objects",
+            lambda: self._generate_services(ctx, prefs, spec),
+            "Business logic, jobs, mailers",
+        )
+
+        self.run_step(
+            "controllers",
+            "Generate controllers",
+            lambda: self._generate_controllers(ctx, spec, prefs),
+            "Application and API controllers",
+        )
+
+        self.run_step(
+            "view_components",
+            "Generate ViewComponents",
+            lambda: self._generate_view_components(ctx, prd_input, prefs, design),
+            "Reusable UI components",
+        )
+
+        self.run_step(
+            "views",
+            "Generate views and layouts",
+            lambda: self._generate_views(ctx, prd_input, prefs, spec, design),
+            "ERB templates, Stimulus controllers",
+        )
+
+        # Convert context files to GeneratedFile list
+        all_files = [
+            GeneratedFile(
+                path=entry.path,
+                content=entry.content,
+                language=entry.language,
+            )
+            for entry in ctx.get_all_files()
+        ]
+
+        self.logger.info(f"Generated {len(all_files)} unique files")
+
+        # Create GitHub repository
+        repo_info = self.run_step(
+            "github_repo",
+            "Create GitHub repository",
+            lambda: self._create_github_repo(prd_input, all_files),
+            "Push code to GitHub",
+        )
+
+        return {
+            "files": all_files,
+            "github_repo_url": repo_info.get("url", ""),
+            "github_owner": repo_info.get("owner", ""),
+            "github_repo_name": repo_info.get("name", ""),
+            "file_count": len(all_files),
+            "folder_structure": ctx.get_folder_structure(),
+            "generation_mode": "direct_api",
+        }
+
+    # =========================================================================
+    # Direct API generation methods (unchanged from original)
+    # =========================================================================
+
     def _generate_project_structure(
-        self, ctx: GenerationContext, opp, prefs
+        self, ctx: GenerationContext, prd_input, prefs
     ) -> None:
         """Generate Rails project structure files."""
         user_prompt = f"""Generate the Rails project structure files for:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.one_liner}
+PRODUCT: {prd_input.name}
+DESCRIPTION: {prd_input.prd_text[:500]}
 FRAMEWORK: Ruby on Rails 7.1
 AUTH: {prefs.auth_preference}
 PAYMENTS: {prefs.payments_preference}
@@ -195,7 +350,7 @@ Do NOT generate:
             self.logger.error(f"Failed to generate project structure: {e}")
             ctx.add_file(
                 "README.md",
-                f"# {opp.name}\n\n{opp.one_liner}",
+                f"# {prd_input.name}\n\n{prd_input.prd_text[:200]}",
                 "markdown",
                 "project",
             )
@@ -207,7 +362,6 @@ Do NOT generate:
         if not spec or not spec.database_schema:
             return
 
-        # Build detailed schema information
         schema_details = []
         for table in spec.database_schema:
             columns_info = []
@@ -256,23 +410,7 @@ Generate JSON with model and migration files:
 
 For each table, generate:
 1. A migration file in db/migrate/ with proper timestamp prefix
-2. A model file in app/models/ with:
-   - belongs_to/has_many associations matching relationships
-   - validates statements for required fields
-   - scopes for common queries
-   - Any computed methods
-
-Migration requirements:
-- Use Rails 7.1 migration syntax
-- Include proper indexes for foreign keys and commonly queried columns
-- Use t.timestamps for created_at/updated_at
-- Use t.references for foreign keys with foreign_key: true
-
-Model requirements:
-- User model should include Devise modules if auth is devise
-- Include association declarations (belongs_to, has_many, has_one)
-- Add presence validations for NOT NULL columns
-- Add useful scopes
+2. A model file in app/models/ with associations, validations, and scopes
 
 Generate migrations in dependency order (referenced tables first).
 """
@@ -285,7 +423,6 @@ Generate migrations in dependency order (referenced tables first).
                 content = f.get("content", "")
                 language = f.get("language", "ruby")
 
-                # Determine category based on path
                 if "migrate" in path:
                     category = "migration"
                     exports = ctx._extract_table_names(content)
@@ -305,7 +442,6 @@ Generate migrations in dependency order (referenced tables first).
         if not spec or not spec.api_endpoints:
             return
 
-        # Build detailed endpoint specifications
         endpoints_detail = []
         for endpoint in spec.api_endpoints:
             req_schema = endpoint.request_schema if endpoint.request_schema else "{}"
@@ -322,14 +458,11 @@ Generate migrations in dependency order (referenced tables first).
 
         endpoints_text = "\n\n".join(endpoints_detail)
 
-        # Get available models for controller context
         model_files = ctx.get_files_by_category("model")
         model_names = []
         for mf in model_files:
             model_names.extend(mf.exports)
 
-        # Get available services
-        service_files = ctx.get_files_by_category("service")
         service_exports = ctx.get_available_components(category="service")
 
         user_prompt = f"""Generate Rails controllers for the API endpoints.
@@ -362,48 +495,11 @@ Generate JSON with controller files:
             "language": "ruby",
             "content": "class ResourcesController < ApplicationController...",
             "exports": ["ResourcesController"]
-        }},
-        {{
-            "path": "app/controllers/api/v1/resources_controller.rb",
-            "language": "ruby",
-            "content": "module Api\\n  module V1...",
-            "exports": ["Api::V1::ResourcesController"]
         }}
     ]
 }}
 
-Generate these controllers:
-
-1. ApplicationController - base controller with:
-   - Devise authentication helpers
-   - Common before_actions
-   - Error handling
-
-2. PagesController - static marketing pages (home, pricing, about)
-
-3. DashboardController - authenticated dashboard
-
-4. SettingsController - user settings
-
-5. API::V1::BaseController - API base with:
-   - Skip CSRF for API
-   - Token authentication
-   - JSON responses
-
-6. Resource controllers for each main model with:
-   - Full CRUD actions
-   - Strong parameters
-   - Turbo Stream responses for HTML
-   - JSON responses for API
-
-7. Webhooks::StripeController - Stripe webhook handler
-
-Controller requirements:
-- Use before_action :authenticate_user! for protected routes
-- Use respond_to blocks for Turbo/HTML/JSON
-- Include proper strong parameters
-- Use service objects for complex business logic
-- Handle errors gracefully
+Generate controllers with full CRUD, strong parameters, Turbo Stream responses, and error handling.
 
 {ctx.get_deduplication_instructions()}
 """
@@ -420,7 +516,6 @@ Controller requirements:
                 if not exports:
                     exports = ctx.extract_exports_from_ruby(content)
 
-                # Categorize as api or controller
                 if "api/" in path:
                     category = "api"
                 else:
@@ -432,10 +527,9 @@ Controller requirements:
             self.logger.error(f"Failed to generate controllers: {e}")
 
     def _generate_view_components(
-        self, ctx: GenerationContext, opp, prefs, design
+        self, ctx: GenerationContext, prd_input, prefs, design
     ) -> None:
         """Generate ViewComponent classes for reusable UI."""
-        # Get features from design phase for context
         features_context = ""
         if design and hasattr(design, "features"):
             feature_names = [f.name for f in design.features[:5]]
@@ -444,9 +538,8 @@ Controller requirements:
         user_prompt = f"""Generate ViewComponent classes for a Rails 7.1 app with Tailwind CSS.
 
 ## Product
-- NAME: {opp.name}
-- DESCRIPTION: {opp.one_liner}
-- BUSINESS MODEL: {opp.business_model}
+- NAME: {prd_input.name}
+- PRD: {prd_input.prd_text[:500]}
 {features_context}
 
 ## Current Project Structure
@@ -472,24 +565,16 @@ Generate JSON with ViewComponent files (Ruby class + ERB template):
 }}
 
 Generate these ViewComponents (each has .rb + .html.erb):
-
 1. ButtonComponent - variants: primary, secondary, danger; sizes: sm, md, lg
 2. CardComponent - container with optional header, body, footer slots
 3. ModalComponent - dialog with Stimulus controller integration
 4. FormFieldComponent - input wrapper with label and error display
-5. AlertComponent - flash message display with variants: info, success, warning, error
+5. AlertComponent - flash message display with variants
 6. AvatarComponent - user avatar with initials fallback
 7. BadgeComponent - status badges with color variants
 8. NavLinkComponent - navigation link with active state
 9. DropdownComponent - dropdown menu with Stimulus controller
 10. PaginationComponent - Pagy-compatible pagination
-
-Each component MUST:
-- Inherit from ViewComponent::Base
-- Use Tailwind CSS classes
-- Accept configuration via initialize parameters
-- Use slots for flexible content areas where appropriate
-- Be fully self-contained
 
 {ctx.get_deduplication_instructions()}
 """
@@ -512,19 +597,14 @@ Each component MUST:
             self.logger.error(f"Failed to generate ViewComponents: {e}")
 
     def _generate_views(
-        self, ctx: GenerationContext, opp, prefs, spec, design
+        self, ctx: GenerationContext, prd_input, prefs, spec, design
     ) -> None:
         """Generate Rails views and layouts."""
-        # Get available components for imports
         component_files = ctx.get_files_by_category("component")
         component_names = []
         for cf in component_files:
             component_names.extend(cf.exports)
 
-        # Get controllers for view structure context
-        controller_files = ctx.get_files_by_category("controller")
-
-        # Get features from design
         features_context = ""
         if design and hasattr(design, "features"):
             features_list = []
@@ -535,10 +615,8 @@ Each component MUST:
         user_prompt = f"""Generate Rails views and layouts with Hotwire (Turbo + Stimulus).
 
 ## Product
-- NAME: {opp.name}
-- DESCRIPTION: {opp.one_liner}
-- BUSINESS MODEL: {opp.business_model}
-- TARGET: {opp.target_segment}
+- NAME: {prd_input.name}
+- PRD: {prd_input.prd_text[:500]}
 
 ## Features to Implement
 {features_context if features_context else "Standard SaaS features"}
@@ -558,52 +636,12 @@ Generate JSON with view files:
             "path": "app/views/layouts/application.html.erb",
             "language": "erb",
             "content": "<!DOCTYPE html>..."
-        }},
-        {{
-            "path": "app/views/pages/home.html.erb",
-            "language": "erb",
-            "content": "..."
         }}
     ]
 }}
 
-Generate these views:
-
-LAYOUTS:
-1. app/views/layouts/application.html.erb - Main app layout with Turbo/Stimulus
-2. app/views/layouts/marketing.html.erb - Public pages layout
-3. app/views/layouts/_navbar.html.erb - Navigation partial
-4. app/views/layouts/_footer.html.erb - Footer partial
-5. app/views/layouts/_flash.html.erb - Flash messages partial
-
-MARKETING PAGES:
-6. app/views/pages/home.html.erb - Landing page with hero, features, CTA
-7. app/views/pages/pricing.html.erb - Pricing tiers
-8. app/views/pages/about.html.erb - About page
-
-AUTH VIEWS (Devise):
-9. app/views/devise/sessions/new.html.erb - Login
-10. app/views/devise/registrations/new.html.erb - Signup
-11. app/views/devise/registrations/edit.html.erb - Edit profile
-
-APP VIEWS:
-12. app/views/dashboard/show.html.erb - Main dashboard
-13. app/views/settings/show.html.erb - User settings
-
-STIMULUS CONTROLLERS:
-14. app/javascript/controllers/form_controller.js - Form validation/submission
-15. app/javascript/controllers/modal_controller.js - Modal open/close
-16. app/javascript/controllers/dropdown_controller.js - Dropdown toggle
-17. app/javascript/controllers/flash_controller.js - Auto-dismiss flash
-
-View requirements:
-- Use ViewComponents instead of raw HTML where available
-- Use Turbo Frames for dynamic content areas
-- Use Turbo Streams for real-time updates
-- Connect Stimulus controllers with data-controller attributes
-- Use Tailwind CSS for all styling
-- Include proper meta tags for SEO
-- Add data-turbo-frame attributes for navigation
+Generate layouts, marketing pages, auth views, app views, and Stimulus controllers.
+Use ViewComponents, Turbo Frames/Streams, and Tailwind CSS.
 
 {ctx.get_deduplication_instructions()}
 """
@@ -616,7 +654,6 @@ View requirements:
                 content = f.get("content", "")
                 language = f.get("language", "erb")
 
-                # Categorize based on path
                 if "layouts" in path:
                     category = "layout"
                 elif "javascript/controllers" in path:
@@ -633,7 +670,6 @@ View requirements:
         self, ctx: GenerationContext, prefs, spec: SpecOutput
     ) -> None:
         """Generate service objects for business logic."""
-        # Build database context if available
         db_context = ""
         if spec and spec.database_schema:
             table_names = [t.name for t in spec.database_schema]
@@ -660,58 +696,12 @@ Generate JSON with service files:
             "language": "ruby",
             "content": "class BaseService...",
             "exports": ["BaseService"]
-        }},
-        {{
-            "path": "app/services/stripe/checkout_service.rb",
-            "language": "ruby",
-            "content": "module Stripe\\n  class CheckoutService...",
-            "exports": ["Stripe::CheckoutService"]
         }}
     ]
 }}
 
-Generate these service objects:
-
-1. app/services/base_service.rb - Base class with:
-   - call class method pattern
-   - Result object (success/failure)
-   - Error handling
-
-2. app/services/stripe/checkout_service.rb - Create Stripe checkout session
-3. app/services/stripe/webhook_handler.rb - Handle Stripe webhooks
-4. app/services/stripe/subscription_service.rb - Manage subscriptions
-
-5. app/services/users/onboarding_service.rb - New user setup
-6. app/services/users/settings_service.rb - Update user settings
-
-7. app/jobs/application_job.rb - Base job class
-8. app/jobs/send_email_job.rb - Async email sending
-
-9. app/mailers/application_mailer.rb - Base mailer
-10. app/mailers/user_mailer.rb - User-related emails
-
-Service object pattern:
-```ruby
-class SomeService < BaseService
-  def initialize(user:, params:)
-    @user = user
-    @params = params
-  end
-
-  def call
-    # Business logic here
-    success(result)
-  rescue StandardError => e
-    failure(e.message)
-  end
-end
-```
-
-Each service MUST:
-- Inherit from BaseService
-- Use dependency injection via initialize
-- Return Result objects (not raise exceptions for business errors)
-- Be testable in isolation
+Generate: BaseService, Stripe services, user services, jobs, and mailers.
+Use service object pattern with call class method and Result objects.
 """
 
         try:
@@ -726,7 +716,6 @@ Each service MUST:
                 if not exports:
                     exports = ctx.extract_exports_from_ruby(content)
 
-                # Categorize based on path
                 if "jobs" in path:
                     category = "job"
                 elif "mailers" in path:
@@ -739,16 +728,16 @@ Each service MUST:
         except Exception as e:
             self.logger.error(f"Failed to generate services: {e}")
 
-    def _create_github_repo(self, opp, files: list[GeneratedFile]) -> dict[str, str]:
-        """Create GitHub repository with generated files.
+    # =========================================================================
+    # Shared methods
+    # =========================================================================
 
-        Returns:
-            Dict with owner, name, and url keys.
-        """
+    def _create_github_repo(self, prd_input, files: list[GeneratedFile]) -> dict[str, str]:
+        """Create GitHub repository with generated files."""
         try:
             repo = github.create_repository(
-                name=opp.slug,
-                description=opp.one_liner,
+                name=prd_input.slug,
+                description=prd_input.prd_text[:200],
                 private=True,
             )
 
@@ -756,9 +745,8 @@ Each service MUST:
                 return {"owner": "", "name": "", "url": ""}
 
             owner = repo.get("owner", {}).get("login", "")
-            repo_name = repo.get("name", opp.slug)
+            repo_name = repo.get("name", prd_input.slug)
 
-            # Create files in batches
             file_data = [
                 {"path": f.path, "content": f.content, "message": f"Add {f.path}"}
                 for f in files

@@ -29,7 +29,7 @@ class TestAgent(BaseAgent):
         # Initialize subtask tracking
         self.init_subtask_tracking(state, parent_phase="build")
 
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
         prefs = state.handoff.build_preferences
         spec = self.get_previous_output(state, "spec")
         build = self.get_previous_output(state, "build")
@@ -84,7 +84,7 @@ class TestAgent(BaseAgent):
             self.run_step(
                 "system_specs",
                 "Generate system specs",
-                lambda: self._generate_system_specs(ctx, opp, prefs),
+                lambda: self._generate_system_specs(ctx, prd_input, prefs),
                 "E2E tests with Capybara",
             )
 
@@ -444,7 +444,7 @@ Also generate spec/support/request_helpers.rb with:
         except Exception as e:
             self.logger.error(f"Failed to generate request specs: {e}")
 
-    def _generate_system_specs(self, ctx: GenerationContext, opp, prefs) -> None:
+    def _generate_system_specs(self, ctx: GenerationContext, prd_input, prefs) -> None:
         """Generate system specs using Capybara."""
         # Get view files for coverage context
         view_files = ctx.get_files_by_category("view")
@@ -453,9 +453,8 @@ Also generate spec/support/request_helpers.rb with:
         user_prompt = f"""Generate RSpec system specs using Capybara for Rails.
 
 ## Product
-- NAME: {opp.name}
-- DESCRIPTION: {opp.detailed_description}
-- BUSINESS MODEL: {opp.business_model}
+- NAME: {prd_input.name}
+- PRD: {prd_input.prd_text[:500]}
 
 ## Views/Pages to Test
 {pages_list if pages_list else "Standard SaaS pages (landing, auth, dashboard)"}

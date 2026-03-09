@@ -1,4 +1,4 @@
-"""Design Agent - PRD, user flows, and feature specs."""
+"""Design Agent - PRD enhancement, user flows, and feature specs."""
 
 from typing import Any
 
@@ -8,9 +8,9 @@ from src.models import (
     DesignOutput,
     FactoryState,
     FeatureSpec,
-    ResearchEnrichmentOutput,
+    PRDAnalysisOutput,
 )
-from src.tools import llm, miro
+from src.tools import llm
 
 
 class DesignAgent(BaseAgent):
@@ -21,33 +21,28 @@ class DesignAgent(BaseAgent):
 
     def run(self, state: FactoryState) -> DesignOutput:
         """
-        Generate PRD, user flows, and feature specifications.
+        Enhance PRD, generate user flows, and feature specifications.
         """
         self.log_start()
 
-        opp = state.handoff.opportunity
-        research = self.get_previous_output(state, "research_enrichment")
+        prd_input = state.handoff.prd_input
+        prd_analysis = self.get_previous_output(state, "prd_analysis")
 
-        # Generate PRD
-        prd = self._generate_prd(opp, research)
+        # Enhance PRD with structured sections
+        prd = self._enhance_prd(prd_input, prd_analysis)
 
         # Generate user flows
-        user_flows = self._generate_user_flows(opp, research)
-
-        # Create Miro user flow board
-        miro_url = self._create_user_flow_board(opp, user_flows)
+        user_flows = self._generate_user_flows(prd_input, prd_analysis)
 
         # Generate feature specs
-        features = self._generate_feature_specs(opp, research)
+        features = self._generate_feature_specs(prd_input, prd_analysis)
 
         # Generate UI copy
-        ui_copy = self._generate_ui_copy(opp, research)
-        # Note: Linear task tracking is now handled at the runner level
+        ui_copy = self._generate_ui_copy(prd_input, prd_analysis)
 
         output = DesignOutput(
             prd_markdown=prd,
             user_flows=user_flows,
-            user_flow_miro_url=miro_url,
             features=features,
             ui_copy=ui_copy,
         )
@@ -55,38 +50,29 @@ class DesignAgent(BaseAgent):
         self.log_complete()
         return output
 
-    def _generate_prd(self, opp, research: ResearchEnrichmentOutput) -> str:
-        """Generate comprehensive PRD."""
-        personas_text = ""
-        if research and research.personas:
-            personas_text = "\n".join(
-                [f"- {p.name}: {p.role}" for p in research.personas]
-            )
+    def _enhance_prd(self, prd_input, prd_analysis: PRDAnalysisOutput) -> str:
+        """Enhance the enriched PRD with structured design sections."""
+        enriched_prd = prd_analysis.enriched_prd_markdown if prd_analysis else prd_input.prd_text
+        target_users = ", ".join(prd_analysis.target_users) if prd_analysis and prd_analysis.target_users else "Target users"
+        core_problem = prd_analysis.core_problem if prd_analysis else ""
 
-        user_prompt = f"""Write a comprehensive PRD for this product:
+        user_prompt = f"""Enhance this PRD with structured product design sections:
 
-PRODUCT: {opp.name}
-ONE-LINER: {opp.one_liner}
-DESCRIPTION: {opp.detailed_description}
-PROBLEM: {opp.problem_statement}
-TARGET: {opp.target_market_description}
-PERSONAS:
-{personas_text}
+PRODUCT: {prd_input.name}
+CORE PROBLEM: {core_problem}
+TARGET USERS: {target_users}
 
-PRICING:
-- Low: ${opp.suggested_price_low/100}/month
-- Mid: ${opp.suggested_price_mid/100}/month
-- High: ${opp.suggested_price_high/100}/month
+ENRICHED PRD:
+{enriched_prd}
 
-Write a complete PRD in markdown format with:
-1. Problem Statement
-2. Target Users (reference personas)
-3. Goals and Success Metrics
-4. Core Features (P0, P1, P2 priorities)
-5. User Stories
-6. Out of Scope
-7. Technical Considerations
-8. Open Questions
+Take the enriched PRD and add:
+1. Feature priority matrix (P0/P1/P2 with acceptance criteria)
+2. Detailed user stories in Given/When/Then format
+3. Success metrics with measurable targets
+4. Edge cases and error scenarios
+5. Information architecture
+
+Output the complete enhanced PRD in markdown format.
 """
 
         try:
@@ -94,16 +80,21 @@ Write a complete PRD in markdown format with:
                 DESIGN_AGENT_PROMPT, user_prompt, model=llm.MODEL_OPUS
             )
         except Exception as e:
-            self.logger.error(f"Failed to generate PRD: {e}")
-            return f"# {opp.name} PRD\n\n## Problem Statement\n{opp.problem_statement}"
+            self.logger.error(f"Failed to enhance PRD: {e}")
+            return enriched_prd or f"# {prd_input.name} PRD\n\n{prd_input.prd_text}"
 
-    def _generate_user_flows(self, opp, research: ResearchEnrichmentOutput) -> list[dict]:
+    def _generate_user_flows(self, prd_input, prd_analysis: PRDAnalysisOutput) -> list[dict]:
         """Generate user flow definitions."""
+        enriched_prd = prd_analysis.enriched_prd_markdown if prd_analysis else prd_input.prd_text
+        mvp_notes = prd_analysis.mvp_scope_notes if prd_analysis else ""
+
         user_prompt = f"""Define key user flows for this product:
 
-PRODUCT: {opp.name}
-PROBLEM: {opp.problem_statement}
-BUSINESS MODEL: {opp.business_model}
+PRODUCT: {prd_input.name}
+PRD:
+{enriched_prd[:3000]}
+
+MVP SCOPE: {mvp_notes}
 
 Generate JSON with user flows:
 {{
@@ -136,57 +127,20 @@ Include flows for:
             self.logger.error(f"Failed to generate user flows: {e}")
             return [{"name": "Default Flow", "steps": []}]
 
-    def _create_user_flow_board(self, opp, user_flows: list[dict]) -> str:
-        """Create Miro user flow visualization."""
-        try:
-            board = miro.create_board(
-                f"User Flows: {opp.name}",
-                "User flow diagrams",
-            )
-            board_id = board.get("id", "mock-id")
-
-            # Create a frame for each flow
-            y_offset = 0
-            for flow in user_flows:
-                miro.create_frame(
-                    board_id,
-                    flow.get("name", "Flow"),
-                    0,
-                    y_offset,
-                )
-
-                # Create step boxes
-                x_offset = 0
-                for step in flow.get("steps", []):
-                    miro.create_shape(
-                        board_id,
-                        f"{step.get('step', 0)}. {step.get('action', '')}",
-                        "rectangle",
-                        x_offset,
-                        y_offset + 100,
-                        180,
-                        80,
-                    )
-                    x_offset += 220
-
-                y_offset += 700
-
-            return board.get("viewLink", "")
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Miro board: {e}")
-            return ""
-
     def _generate_feature_specs(
-        self, opp, research: ResearchEnrichmentOutput
+        self, prd_input, prd_analysis: PRDAnalysisOutput
     ) -> list[FeatureSpec]:
         """Generate detailed feature specifications."""
+        enriched_prd = prd_analysis.enriched_prd_markdown if prd_analysis else prd_input.prd_text
+        tech_stack = prd_input.tech_stack_preference or "Rails + PostgreSQL"
+
         user_prompt = f"""Create feature specifications for this product:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.detailed_description}
-KEY COMPONENTS: {', '.join(opp.key_technical_components)}
-BUILD COMPLEXITY: {opp.build_complexity}
+PRODUCT: {prd_input.name}
+TECH STACK: {tech_stack}
+
+PRD:
+{enriched_prd[:3000]}
 
 Generate JSON with features:
 {{
@@ -232,13 +186,16 @@ Include P0 (MVP), P1 (post-launch), and P2 (future) features.
             self.logger.error(f"Failed to generate features: {e}")
             return []
 
-    def _generate_ui_copy(self, opp, research: ResearchEnrichmentOutput) -> dict[str, str]:
+    def _generate_ui_copy(self, prd_input, prd_analysis: PRDAnalysisOutput) -> dict[str, str]:
         """Generate UI copy."""
+        summary = prd_analysis.product_summary if prd_analysis else prd_input.prd_text[:200]
+        target_users = ", ".join(prd_analysis.target_users) if prd_analysis and prd_analysis.target_users else "Target users"
+
         user_prompt = f"""Generate UI copy for this product:
 
-PRODUCT: {opp.name}
-ONE-LINER: {opp.one_liner}
-TARGET: {opp.target_market_description}
+PRODUCT: {prd_input.name}
+SUMMARY: {summary}
+TARGET USERS: {target_users}
 
 Generate JSON with UI copy:
 {{
@@ -260,5 +217,4 @@ Generate JSON with UI copy:
             )
         except Exception as e:
             self.logger.error(f"Failed to generate UI copy: {e}")
-            return {"headline": opp.one_liner}
-
+            return {"headline": prd_input.name}

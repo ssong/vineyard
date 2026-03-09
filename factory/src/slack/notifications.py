@@ -34,13 +34,13 @@ def _upload_phase_pdf(channel_id: str, state: FactoryState, phase: Phase) -> Opt
             return None
 
         logger.info(f"Uploading PDF: {pdf_path}")
-        opp_name = state.handoff.opportunity.name
+        product_name = state.handoff.prd_input.name
         phase_title = phase.value.replace("_", " ").title()
 
         result = app.client.files_upload_v2(
             channel=channel_id,
             file=pdf_path,
-            title=f"{opp_name} - {phase_title} Report",
+            title=f"{product_name} - {phase_title} Report",
             initial_comment=f"📄 *{phase_title} Report*",
         )
 
@@ -58,13 +58,11 @@ def _upload_phase_pdf(channel_id: str, state: FactoryState, phase: Phase) -> Opt
 def send_phase_update(channel_id: str, state: FactoryState, phase: Phase):
     """Send phase completion notification."""
     phase_emoji = {
-        Phase.RESEARCH_ENRICHMENT: "🔍",
+        Phase.PRD_ANALYSIS: "📝",
         Phase.DESIGN: "🎨",
         Phase.SPEC: "📋",
         Phase.BUILD: "🔨",
         Phase.LAUNCH_PREP: "🚀",
-        Phase.LAUNCH: "📣",
-        Phase.GROWTH: "📈",
     }
 
     emoji = phase_emoji.get(phase, "✅")
@@ -90,7 +88,7 @@ def _get_previous_phase(phase: Phase) -> Phase:
 def send_checkpoint_request(channel_id: str, state: FactoryState):
     """Send checkpoint approval request with PDF of completed phase outputs."""
     pending_phase = state.current_phase
-    opp_name = state.handoff.opportunity.name
+    product_name = state.handoff.prd_input.name
     pending_phase_title = pending_phase.value.replace("_", " ").title()
 
     try:
@@ -127,7 +125,7 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{opp_name}*\n\n"
+                        "text": f"*{product_name}*\n\n"
                         f"The following phases have been completed:\n"
                         f"✅ {completed_summary}\n\n"
                         f"Review the reports above and in Linear before approving.",
@@ -183,25 +181,26 @@ def send_checkpoint_request(channel_id: str, state: FactoryState):
 
 def send_factory_complete(channel_id: str, state: FactoryState):
     """Send factory completion notification."""
-    opp = state.handoff.opportunity
+    product_name = state.handoff.prd_input.name
+    total_phases = len(list(Phase))
 
     try:
         app.client.chat_postMessage(
             channel=channel_id,
-            text=f"🎉 *Factory Complete: {opp.name}*",
+            text=f"🎉 *Factory Complete: {product_name}*",
             blocks=[
                 {
                     "type": "header",
                     "text": {
                         "type": "plain_text",
-                        "text": f"🎉 Factory Complete: {opp.name}",
+                        "text": f"🎉 Factory Complete: {product_name}",
                     },
                 },
                 {"type": "divider"},
                 {
                     "type": "section",
                     "fields": [
-                        {"type": "mrkdwn", "text": f"*Phases Completed:*\n7/7"},
+                        {"type": "mrkdwn", "text": f"*Phases Completed:*\n{total_phases}/{total_phases}"},
                         {"type": "mrkdwn", "text": f"*Duration:*\n{_format_duration(state)}"},
                     ],
                 },

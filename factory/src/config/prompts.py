@@ -19,7 +19,7 @@ def _load_prompt(filename: str) -> str:
 # PRODUCT DOMAIN PROMPTS
 # =============================================================================
 
-RESEARCH_ENRICHMENT_PROMPT = _load_prompt("research_agent.md")
+PRD_ANALYSIS_AGENT_PROMPT = _load_prompt("prd_analysis_agent.md")
 DESIGN_AGENT_PROMPT = _load_prompt("design_agent.md")
 SPEC_AGENT_PROMPT = _load_prompt("spec_agent.md")
 
@@ -38,6 +38,3 @@ QA_AGENT_PROMPT = _load_prompt("qa_agent.md")
 # =============================================================================
 
 MARKETING_AGENT_PROMPT = _load_prompt("marketing_agent.md")
-LAUNCH_AGENT_PROMPT = _load_prompt("launch_agent.md")
-GROWTH_AGENT_PROMPT = _load_prompt("growth_agent.md")
-SUPPORT_AGENT_PROMPT = _load_prompt("support_agent.md")

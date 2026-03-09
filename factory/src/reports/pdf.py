@@ -150,11 +150,11 @@ def _to_dict(obj: Any) -> Any:
     return obj
 
 
-def _generate_research_enrichment_markdown(output: dict, opp_name: str) -> str:
-    """Generate markdown for research enrichment output."""
+def _generate_prd_analysis_markdown(output: dict, product_name: str) -> str:
+    """Generate markdown for PRD analysis output."""
     lines = [
-        f"# Research Enrichment Report",
-        f"## {opp_name}",
+        f"# PRD Analysis Report",
+        f"## {product_name}",
         "",
         f"*Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}*",
         "",
@@ -162,155 +162,66 @@ def _generate_research_enrichment_markdown(output: dict, opp_name: str) -> str:
         "",
     ]
 
-    # Positioning Statement
-    if output.get("positioning_statement"):
+    # Product Summary
+    if output.get("product_summary"):
         lines.extend([
-            "## Positioning Statement",
+            "## Product Summary",
             "",
-            f"> {output['positioning_statement']}",
+            output["product_summary"],
             "",
         ])
 
-    # User Personas
-    personas = output.get("personas", [])
-    if personas:
+    # Core Problem
+    if output.get("core_problem"):
         lines.extend([
-            "## User Personas",
+            "## Core Problem",
+            "",
+            output["core_problem"],
             "",
         ])
 
-        primary = output.get("primary_persona", "")
+    # Target Users
+    target_users = output.get("target_users", [])
+    if target_users:
+        lines.extend(["## Target Users", ""])
+        for user in target_users:
+            lines.append(f"- {user}")
+        lines.append("")
 
-        for persona in personas:
-            is_primary = primary and primary.lower() in persona.get("name", "").lower()
-            primary_badge = " **(Primary)**" if is_primary else ""
+    # Identified Gaps
+    gaps = output.get("identified_gaps", [])
+    if gaps:
+        lines.extend(["## Identified Gaps", ""])
+        for gap in gaps:
+            lines.append(f"- {gap}")
+        lines.append("")
 
-            lines.extend([
-                f"### {persona.get('name', 'Unnamed')}{primary_badge}",
-                f"**Role:** {persona.get('role', 'N/A')}",
-                "",
-                f"**Demographics:** {persona.get('demographics', 'N/A')}",
-                "",
-            ])
-
-            if persona.get("goals"):
-                lines.append("**Goals:**")
-                for goal in persona["goals"]:
-                    lines.append(f"- {goal}")
-                lines.append("")
-
-            if persona.get("frustrations"):
-                lines.append("**Frustrations:**")
-                for frustration in persona["frustrations"]:
-                    lines.append(f"- {frustration}")
-                lines.append("")
-
-            if persona.get("jobs_to_be_done"):
-                lines.append("**Jobs to be Done:**")
-                for job in persona["jobs_to_be_done"]:
-                    lines.append(f"- {job}")
-                lines.append("")
-
-            if persona.get("willingness_to_pay"):
-                lines.append(f"**Willingness to Pay:** {persona['willingness_to_pay']}")
-                lines.append("")
-
-            if persona.get("acquisition_channels"):
-                lines.append("**Acquisition Channels:** " + ", ".join(persona["acquisition_channels"]))
-                lines.append("")
-
-            lines.append("---")
+    # Q&A
+    qa = output.get("clarification_qa", [])
+    if qa:
+        lines.extend(["## Clarification Q&A", ""])
+        for pair in qa:
+            lines.append(f"**Q:** {pair.get('question', '')}")
+            lines.append(f"**A:** {pair.get('answer', '')}")
             lines.append("")
 
-    # Competitor Analysis
-    competitors = output.get("competitor_matrix", [])
-    if competitors:
+    # MVP Scope Notes
+    if output.get("mvp_scope_notes"):
         lines.extend([
-            "## Competitive Analysis",
+            "## MVP Scope Notes",
+            "",
+            output["mvp_scope_notes"],
             "",
         ])
 
-        for comp in competitors:
-            lines.extend([
-                f"### {comp.get('competitor_name', 'Unknown')}",
-                f"**Website:** {comp.get('website', 'N/A')}",
-                "",
-            ])
-
-            if comp.get("key_strengths"):
-                lines.append("**Strengths:**")
-                for strength in comp["key_strengths"]:
-                    lines.append(f"- {strength}")
-                lines.append("")
-
-            if comp.get("key_gaps"):
-                lines.append("**Gaps/Weaknesses:**")
-                for gap in comp["key_gaps"]:
-                    lines.append(f"- {gap}")
-                lines.append("")
-
-            if comp.get("review_summary"):
-                lines.append(f"**Review Summary:** {comp['review_summary']}")
-                lines.append("")
-
-            # Pricing tiers
-            pricing = comp.get("pricing_tiers", [])
-            if pricing:
-                lines.append("**Pricing:**")
-                for tier in pricing:
-                    if isinstance(tier, dict):
-                        tier_name = tier.get("name", "Tier")
-                        tier_price = tier.get("price", "N/A")
-                        lines.append(f"- {tier_name}: {tier_price}")
-                lines.append("")
-
-            lines.append("---")
-            lines.append("")
-
-    # SEO Strategy
-    seo = output.get("seo_strategy", {})
-    if seo:
-        lines.extend([
-            "## SEO Strategy",
-            "",
-        ])
-
-        if seo.get("primary_keywords"):
-            lines.append("**Primary Keywords:**")
-            for kw in seo["primary_keywords"]:
-                if isinstance(kw, dict):
-                    keyword = kw.get("keyword", kw.get("term", str(kw)))
-                    volume = kw.get("volume", kw.get("search_volume", ""))
-                    if volume:
-                        lines.append(f"- {keyword} (volume: {volume})")
-                    else:
-                        lines.append(f"- {keyword}")
-                else:
-                    lines.append(f"- {kw}")
-            lines.append("")
-
-        if seo.get("long_tail_keywords"):
-            lines.append("**Long-tail Keywords:**")
-            for kw in seo["long_tail_keywords"][:10]:  # Limit to 10
-                lines.append(f"- {kw}")
-            lines.append("")
-
-        if seo.get("content_opportunities"):
-            lines.append("**Content Opportunities:**")
-            for opp in seo["content_opportunities"]:
-                lines.append(f"- {opp}")
-            lines.append("")
-
-        if seo.get("estimated_organic_potential"):
-            lines.append(f"**Estimated Organic Potential:** {seo['estimated_organic_potential']}")
-            lines.append("")
-
-    # Miro link
-    if output.get("competitive_landscape_miro_url"):
+    # Enriched PRD
+    if output.get("enriched_prd_markdown"):
         lines.extend([
             "---",
             "",
-            f"**Competitive Landscape Diagram:** [{output['competitive_landscape_miro_url']}]({output['competitive_landscape_miro_url']})",
+            "## Enriched PRD",
+            "",
+            output["enriched_prd_markdown"],
             "",
         ])
 
@@ -366,15 +277,6 @@ def _generate_design_markdown(output: dict, opp_name: str) -> str:
                 for ac in feature["acceptance_criteria"]:
                     lines.append(f"- {ac}")
                 lines.append("")
-
-    # User flows
-    if output.get("user_flow_miro_url"):
-        lines.extend([
-            "---",
-            "",
-            f"**User Flow Diagram:** [{output['user_flow_miro_url']}]({output['user_flow_miro_url']})",
-            "",
-        ])
 
     return "\n".join(lines)
 
@@ -444,15 +346,15 @@ def generate_phase_markdown(state: FactoryState, phase: Phase) -> Optional[str]:
         return None
 
     output_dict = _to_dict(output)
-    opp_name = state.handoff.opportunity.name
+    product_name = state.handoff.prd_input.name
 
     # Use phase-specific formatter if available
-    if phase == Phase.RESEARCH_ENRICHMENT:
-        return _generate_research_enrichment_markdown(output_dict, opp_name)
+    if phase == Phase.PRD_ANALYSIS:
+        return _generate_prd_analysis_markdown(output_dict, product_name)
     elif phase == Phase.DESIGN:
-        return _generate_design_markdown(output_dict, opp_name)
+        return _generate_design_markdown(output_dict, product_name)
     else:
-        return _generate_generic_markdown(output_dict, phase.value, opp_name)
+        return _generate_generic_markdown(output_dict, phase.value, product_name)
 
 
 def generate_phase_report_pdf(state: FactoryState, phase: Phase) -> Optional[str]:
@@ -478,13 +380,13 @@ def generate_phase_report_pdf(state: FactoryState, phase: Phase) -> Optional[str
     )
 
     # Wrap in HTML document
-    opp_name = state.handoff.opportunity.name
+    product_name = state.handoff.prd_input.name
     full_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
-        <title>{phase.value.replace('_', ' ').title()} Report - {opp_name}</title>
+        <title>{phase.value.replace('_', ' ').title()} Report - {product_name}</title>
     </head>
     <body>
         {html_content}
@@ -493,7 +395,7 @@ def generate_phase_report_pdf(state: FactoryState, phase: Phase) -> Optional[str
     """
 
     # Generate PDF
-    filename = f"{state.handoff.opportunity.slug}-{phase.value}-{state.execution_id[:8]}.pdf"
+    filename = f"{state.handoff.prd_input.slug}-{phase.value}-{state.execution_id[:8]}.pdf"
     output_path = OUTPUTS_DIR / filename
 
     try:

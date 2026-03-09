@@ -6,8 +6,8 @@ from datetime import datetime
 from typing import Optional
 
 from src.agents.engineering import CodeAgent, DevOpsAgent, QAAgent, SecurityAgent, TestAgent
-from src.agents.gtm import GrowthAgent, LaunchAgent, MarketingAgent, SupportAgent
-from src.agents.product import DesignAgent, ResearchEnrichmentAgent, SpecAgent
+from src.agents.gtm import MarketingAgent
+from src.agents.product import DesignAgent, PRDAnalysisAgent, SpecAgent
 from src.models import FactoryHandoff, FactoryState, Phase, PhaseStatus
 from src.orchestrator.persistence import (
     delete_state,
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Phase configuration
 PHASE_CONFIG = {
-    Phase.RESEARCH_ENRICHMENT: {
-        "agent": ResearchEnrichmentAgent,
+    Phase.PRD_ANALYSIS: {
+        "agent": PRDAnalysisAgent,
         "checkpoint": False,
     },
     Phase.DESIGN: {
@@ -38,28 +38,18 @@ PHASE_CONFIG = {
         "checkpoint": True,
     },
     Phase.LAUNCH_PREP: {
-        "agent": None,  # Composite of Marketing, Launch
-        "checkpoint": False,
-    },
-    Phase.LAUNCH: {
-        "agent": LaunchAgent,
-        "checkpoint": True,
-    },
-    Phase.GROWTH: {
-        "agent": None,  # Composite of Growth, Support
+        "agent": None,  # Marketing only
         "checkpoint": False,
     },
 }
 
 # Phase order
 PHASE_ORDER = [
-    Phase.RESEARCH_ENRICHMENT,
+    Phase.PRD_ANALYSIS,
     Phase.DESIGN,
     Phase.SPEC,
     Phase.BUILD,
     Phase.LAUNCH_PREP,
-    Phase.LAUNCH,
-    Phase.GROWTH,
 ]
 
 
@@ -68,7 +58,7 @@ def create_factory_run(handoff: FactoryHandoff) -> FactoryState:
     state = FactoryState(
         execution_id=str(uuid.uuid4()),
         handoff=handoff,
-        current_phase=Phase.RESEARCH_ENRICHMENT,
+        current_phase=Phase.PRD_ANALYSIS,
     )
 
     # Initialize phase statuses
@@ -117,7 +107,7 @@ def _initialize_linear_tracking(state: FactoryState) -> dict[str, dict]:
     # Create upfront issues for all phases
     phase_issues = linear.create_factory_issues(
         project_id=state.handoff.linear_project_id,
-        product_name=state.handoff.opportunity.name,
+        product_name=state.handoff.prd_input.name,
         execution_id=state.execution_id,
     )
 
@@ -125,17 +115,17 @@ def _initialize_linear_tracking(state: FactoryState) -> dict[str, dict]:
     for phase_name, phase_info in phase_issues.items():
         if phase_name == "root":
             continue
-        
+
         phase_id = phase_info.get("id")
         if not phase_id:
             continue
-        
+
         task_issues = _create_phase_tasks(
             state=state,
             phase_name=phase_name,
             phase_issue_id=phase_id,
         )
-        
+
         # Store task IDs in the phase info
         phase_issues[phase_name]["tasks"] = task_issues
 
@@ -181,7 +171,7 @@ def _create_phase_tasks(
                 labels=[label],
                 assignee_name="vineyard",
             )
-            
+
             if issue:
                 task_issues[task["key"]] = {
                     "id": issue.get("id"),
@@ -330,24 +320,24 @@ def resume_factory(
         Updated state, or None if execution not found
     """
     state = load_state(execution_id)
-    
+
     if not state:
         logger.error(f"No state found for execution: {execution_id}")
         return None
-    
+
     current_status = state.phase_statuses.get(state.current_phase.value)
-    
+
     if current_status == PhaseStatus.FAILED:
         # Reset failed phase to pending and retry
         logger.info(f"Resuming failed execution {execution_id} from {state.current_phase.value}")
         state.update_phase_status(state.current_phase, PhaseStatus.PENDING)
         save_state(state)
         return run_factory(state, channel_id)
-    
+
     elif current_status == PhaseStatus.AWAITING_APPROVAL:
         logger.info(f"Execution {execution_id} is awaiting approval, not resuming")
         return state
-    
+
     elif current_status == PhaseStatus.COMPLETED:
         # Move to next phase if current is complete
         next_phase = _get_next_phase(state.current_phase)
@@ -358,7 +348,7 @@ def resume_factory(
         else:
             logger.info(f"Execution {execution_id} is already complete")
             return state
-    
+
     else:
         # Continue from current state
         return run_factory(state, channel_id)
@@ -396,16 +386,16 @@ def get_pending_runs() -> list[dict]:
 def cleanup_old_runs(days: int = 30) -> int:
     """Delete factory runs older than specified days."""
     from datetime import timedelta
-    
+
     cutoff = datetime.utcnow() - timedelta(days=days)
     deleted = 0
-    
+
     for run in list_states():
         started = datetime.fromisoformat(run["started_at"])
         if started < cutoff:
             delete_state(run["execution_id"])
             deleted += 1
-    
+
     logger.info(f"Cleaned up {deleted} old factory runs")
     return deleted
 
@@ -473,24 +463,12 @@ def _execute_phase(state: FactoryState, phase: Phase) -> dict:
         return outputs
 
     elif phase == Phase.LAUNCH_PREP:
-        # Composite: Marketing + Launch prep
+        # Marketing only
         outputs = {}
 
         marketing_agent = MarketingAgent()
         outputs["marketing"] = marketing_agent.run(state)
         state.store_output(Phase.LAUNCH_PREP, outputs)
-
-        return outputs
-
-    elif phase == Phase.GROWTH:
-        # Composite: Growth + Support
-        outputs = {}
-
-        growth_agent = GrowthAgent()
-        outputs["growth"] = growth_agent.run(state)
-
-        support_agent = SupportAgent()
-        outputs["support"] = support_agent.run(state)
 
         return outputs
 
@@ -538,7 +516,7 @@ def _notify_failure(channel_id: str, state: FactoryState, error: str):
     """Send failure notification with resume option."""
     try:
         from src.slack.app import app
-        
+
         app.client.chat_postMessage(
             channel=channel_id,
             text=f"❌ Factory failed at {state.current_phase.value}",
@@ -559,7 +537,7 @@ def _notify_failure(channel_id: str, state: FactoryState, error: str):
                         },
                         {
                             "type": "mrkdwn",
-                            "text": f"*Product:*\n{state.handoff.opportunity.name}",
+                            "text": f"*Product:*\n{state.handoff.prd_input.name}",
                         },
                     ],
                 },
@@ -668,7 +646,7 @@ def _complete_factory_run_linear(state: FactoryState):
 
 All phases have completed successfully.
 
-**Product:** {state.handoff.opportunity.name}
+**Product:** {state.handoff.prd_input.name}
 **Duration:** Started at {state.started_at.isoformat()}
 **Completed:** {state.completed_at.isoformat() if state.completed_at else 'now'}
 
@@ -700,17 +678,20 @@ def _get_phase_summary(phase: Phase, output) -> str:
 
     summary_parts = []
 
-    if phase == Phase.RESEARCH_ENRICHMENT:
-        summary_parts.append("Research enrichment completed:")
-        if output.get("enriched_data"):
-            summary_parts.append("- Market data enriched")
-        if output.get("competitor_analysis"):
-            summary_parts.append("- Competitor analysis updated")
+    if phase == Phase.PRD_ANALYSIS:
+        summary_parts.append("PRD analysis completed:")
+        gaps = output.get("identified_gaps", [])
+        if gaps:
+            summary_parts.append(f"- {len(gaps)} gaps identified")
+        qa = output.get("clarification_qa", [])
+        if qa:
+            summary_parts.append(f"- {len(qa)} Q&A pairs collected")
+        summary_parts.append("- Enriched PRD generated")
 
     elif phase == Phase.DESIGN:
         summary_parts.append("Design phase completed:")
-        if output.get("prd"):
-            summary_parts.append("- PRD generated")
+        if output.get("prd_markdown"):
+            summary_parts.append("- PRD enhanced")
         if output.get("user_flows"):
             summary_parts.append("- User flows created")
         features = output.get("features", [])
@@ -719,14 +700,13 @@ def _get_phase_summary(phase: Phase, output) -> str:
 
     elif phase == Phase.SPEC:
         summary_parts.append("Technical specification completed:")
-        endpoints = output.get("endpoints", [])
+        endpoints = output.get("api_endpoints", [])
         if endpoints:
             summary_parts.append(f"- {len(endpoints)} API endpoints designed")
-        database = output.get("database", {})
-        if database:
-            tables = database.get("tables", []) if isinstance(database, dict) else []
+        tables = output.get("database_schema", [])
+        if tables:
             summary_parts.append(f"- {len(tables)} database tables")
-        tasks = output.get("tasks", [])
+        tasks = output.get("task_breakdown", [])
         if tasks:
             summary_parts.append(f"- {len(tasks)} engineering tasks")
 
@@ -749,17 +729,6 @@ def _get_phase_summary(phase: Phase, output) -> str:
         summary_parts.append("Launch preparation completed:")
         if output.get("marketing"):
             summary_parts.append("- Marketing content ready")
-
-    elif phase == Phase.LAUNCH:
-        summary_parts.append("Launch completed:")
-        summary_parts.append("- Product deployed to production")
-
-    elif phase == Phase.GROWTH:
-        summary_parts.append("Growth setup completed:")
-        if output.get("growth"):
-            summary_parts.append("- Growth experiments configured")
-        if output.get("support"):
-            summary_parts.append("- Support documentation ready")
 
     return "\n".join(summary_parts) if summary_parts else "Phase completed successfully."
 

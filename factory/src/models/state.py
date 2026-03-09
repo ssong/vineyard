@@ -9,13 +9,11 @@ from typing import Any, Optional
 class Phase(Enum):
     """Factory execution phases."""
 
-    RESEARCH_ENRICHMENT = "research_enrichment"
+    PRD_ANALYSIS = "prd_analysis"
     DESIGN = "design"
     SPEC = "spec"
     BUILD = "build"
     LAUNCH_PREP = "launch_prep"
-    LAUNCH = "launch"
-    GROWTH = "growth"
 
 
 class PhaseStatus(Enum):
@@ -31,55 +29,15 @@ class PhaseStatus(Enum):
 
 
 @dataclass
-class OpportunitySummary:
-    """Condensed opportunity data from research agent."""
+class PRDInput:
+    """PRD input from user submission."""
 
     name: str
     slug: str
-    one_liner: str
-    detailed_description: str
-    category: str
-    target_segment: str
-    business_model: str
-    problem_statement: str
-    current_solutions: list[str]
-    pain_intensity: int
-    frequency: str
-    target_market_description: str
-    geographic_focus: list[str]
-    direct_competitors: list[str]
-    competitor_weaknesses: list[str]
-    differentiation_angle: str
-    build_complexity: str
-    estimated_build_weeks: int
-    key_technical_components: list[str]
-    platform_dependencies: list[str]
-    suggested_price_low: int
-    suggested_price_mid: int
-    suggested_price_high: int
-
-
-@dataclass
-class ValidationSummary:
-    """Key validation signals from research agent."""
-
-    four_u_score: int
-    four_u_breakdown: dict[str, int]
-    is_graveyard_market: bool
-    platform_risk_level: str
-    key_risks: list[str]
-    key_opportunities: list[str]
-
-
-@dataclass
-class ForecastSummary:
-    """Revenue projections from research agent."""
-
-    assumed_arpu: int
-    mrr_month_12_conservative: int
-    mrr_month_12_moderate: int
-    mrr_month_12_optimistic: int
-    mrr_month_24_moderate: int
+    prd_text: str
+    submitted_by: str
+    tech_stack_preference: Optional[str] = None
+    additional_context: Optional[str] = None
 
 
 @dataclass
@@ -100,35 +58,18 @@ class BuildPreferences:
 
 
 @dataclass
-class LaunchPreferences:
-    """Operator preferences for launch phase."""
-
-    target_launch_date: Optional[datetime] = None
-    launch_on_product_hunt: bool = True
-    launch_on_twitter: bool = True
-    launch_on_linkedin: bool = True
-    email_provider: str = "resend"
-    launch_pricing_tier: str = "mid"
-
-
-@dataclass
 class FactoryHandoff:
-    """Handoff payload from Research Agent to SaaS Factory."""
+    """Handoff payload from PRD submission to SaaS Factory."""
 
     handoff_id: str
     triggered_at: datetime
     triggered_by: str
-    research_report_id: str
-    opportunity_id: str
     linear_project_id: str
     linear_project_url: str
-    opportunity: OpportunitySummary
-    validation: ValidationSummary
-    forecast: ForecastSummary
+    prd_input: PRDInput
     build_preferences: BuildPreferences = field(default_factory=BuildPreferences)
-    launch_preferences: LaunchPreferences = field(default_factory=LaunchPreferences)
     approval_checkpoints: list[str] = field(
-        default_factory=lambda: ["design", "build", "launch"]
+        default_factory=lambda: ["design", "build"]
     )
 
 
@@ -138,7 +79,7 @@ class FactoryState:
 
     execution_id: str
     handoff: FactoryHandoff
-    current_phase: Phase = Phase.RESEARCH_ENRICHMENT
+    current_phase: Phase = Phase.PRD_ANALYSIS
     phase_statuses: dict[str, PhaseStatus] = field(default_factory=dict)
     phase_outputs: dict[str, Any] = field(default_factory=dict)
     checkpoints_cleared: list[str] = field(default_factory=list)
@@ -155,6 +96,8 @@ class FactoryState:
     slack_channels: dict[str, str] = field(default_factory=dict)
     # GitHub repository info (set by CodeAgent, used by TestAgent, DevOpsAgent, QAAgent)
     github_repo: Optional[dict[str, str]] = None
+    # Slack thread for PRD Q&A
+    slack_qa_thread_ts: Optional[str] = None
 
     def update_phase_status(self, phase: Phase, status: PhaseStatus):
         """

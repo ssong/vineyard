@@ -27,9 +27,6 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    # Miro (optional)
-    miro_access_token: str = ""
-
     # GitHub (optional)
     github_token: str = ""
 

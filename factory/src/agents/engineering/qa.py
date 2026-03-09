@@ -1,4 +1,9 @@
-"""QA Agent - Validates, remediates, and tracks code quality issues for Rails."""
+"""QA Agent - Validates, remediates, and tracks code quality issues for Rails.
+
+Supports two modes:
+1. Agent SDK mode: Claude autonomously validates and fixes issues (adaptive)
+2. Direct mode: Sequential validation steps (fallback)
+"""
 
 import json
 import re
@@ -182,7 +187,7 @@ class QAAgent(BaseAgent):
                     lambda: self._push_fixes_to_github(files_dict, repo_info)
                 )
 
-            # Clone, verify build, run full validation suite
+            # Full build validation - use Agent SDK if available
             self._run_validation_with_tracking(
                 "full_build_validation",
                 "Clone and validate build (bundle, rubocop, rspec)",
@@ -222,12 +227,379 @@ class QAAgent(BaseAgent):
             ),
         }
 
+    # =========================================================================
+    # Full Build Validation
+    # =========================================================================
+
+    def _full_build_validation(
+        self,
+        repo_info: dict,
+        files_dict: dict[str, GeneratedFile],
+        state: FactoryState,
+    ) -> None:
+        """Run full build validation. Uses Agent SDK if available, otherwise direct."""
+        from src.tools.agent_runner import is_sdk_available
+        if is_sdk_available():
+            self.logger.info("Using Agent SDK for adaptive build validation")
+            self._full_build_validation_agent(repo_info, state)
+        else:
+            self.logger.info("Using direct build validation")
+            self._full_build_validation_direct(repo_info, files_dict, state)
+
+    def _full_build_validation_agent(
+        self,
+        repo_info: dict,
+        state: FactoryState,
+    ) -> None:
+        """Use Agent SDK for adaptive build validation.
+
+        Claude gets tools to run commands, read/write files, and report issues.
+        It can adaptively fix problems as it finds them.
+        """
+        import os
+        import subprocess
+        import tempfile
+
+        from src.tools import agent_tools
+        from src.tools.agent_runner import run_agent
+
+        self.logger.info("Starting Agent SDK build validation...")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Clone the repo
+            token = settings.github_token
+            if token:
+                clone_url = f"https://{token}@github.com/{repo_info['owner']}/{repo_info['name']}.git"
+            else:
+                clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
+
+            clone_result = subprocess.run(
+                ["git", "clone", "--depth=1", clone_url, tmpdir],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            if clone_result.returncode != 0:
+                error_msg = clone_result.stderr.replace(token, "***") if token else clone_result.stderr
+                self._add_issue(
+                    IssueSeverity.CRITICAL,
+                    IssueType.BUILD_ERROR,
+                    f"Failed to clone repo: {error_msg[:200]}",
+                )
+                return
+
+            # Configure git
+            subprocess.run(["git", "config", "user.email", "factory@vineyard.dev"], cwd=tmpdir, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Vineyard Factory"], cwd=tmpdir, capture_output=True)
+
+            # Set up tool state
+            agent_tools.reset_state()
+            agent_tools._generation_state["project_dir"] = tmpdir
+
+            # Get QA tools
+            tools = agent_tools.get_qa_tools()
+
+            prompt = f"""Validate and fix this Ruby on Rails 7.1 application.
+
+The project has been cloned to the working directory. Run these validation steps in order:
+
+1. **bundle install** - Install dependencies. If it fails, read the Gemfile and fix issues.
+2. **bundle audit check --update** - Check for vulnerable dependencies. Report any CVEs found.
+3. **bundle exec rubocop -A --format simple** - Run linter with auto-fix. Report remaining offenses.
+4. **bundle exec brakeman -q --no-pager** - Security scan. Report any warnings.
+5. **bundle exec rspec --format progress** - Run tests. If tests fail, try to fix obvious issues.
+6. **RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 bundle exec rails assets:precompile** - Verify production build.
+
+For each step:
+- If it fails, read the error output carefully
+- Try to fix the issue by modifying the relevant file
+- Re-run the step to verify the fix
+- Use `report_issue` to record each issue found (whether fixed or not)
+
+After all steps, commit and push any fixes:
+```
+git add .
+git commit -m "fix(qa): Auto-remediation by QA agent"
+git push
+```
+
+Be thorough but efficient. Fix what you can, report what you can't."""
+
+            try:
+                result = run_agent(
+                    prompt=prompt,
+                    system_prompt=QA_AGENT_PROMPT,
+                    tools=tools,
+                    model="sonnet",
+                    max_turns=40,
+                    max_budget_usd=3.0,
+                    cwd=tmpdir,
+                )
+
+                self.logger.info(
+                    f"Agent SDK validation completed in {result.turns} turns, "
+                    f"cost: ${result.cost_usd:.4f}"
+                )
+
+                # Collect issues from tool state
+                qa_issues = agent_tools._generation_state.get("qa_issues", [])
+                for issue_data in qa_issues:
+                    severity = IssueSeverity(issue_data.get("severity", "medium"))
+                    issue = self._add_issue(
+                        severity,
+                        IssueType(issue_data.get("issue_type", "build_error")),
+                        issue_data["message"],
+                        file=issue_data.get("file"),
+                    )
+                    if issue_data.get("fixed"):
+                        self._mark_issue_fixed(issue, issue_data.get("fix_action", "Auto-fixed by agent"))
+
+                # Track modified files
+                modified = agent_tools._generation_state.get("files_modified", [])
+                self.files_modified.extend(modified)
+
+            except Exception as e:
+                self.logger.error(f"Agent SDK validation failed: {e}")
+                # Fall back to direct validation
+                self.logger.info("Falling back to direct build validation")
+                self._full_build_validation_direct(repo_info, files_dict={}, state=state)
+
+    def _full_build_validation_direct(
+        self,
+        repo_info: dict,
+        files_dict: dict[str, GeneratedFile],
+        state: FactoryState,
+    ) -> None:
+        """Direct build validation (original approach)."""
+        import os
+        import subprocess
+        import tempfile
+
+        self.logger.info("Starting direct build validation for Rails...")
+
+        local_fixes_made = False
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                token = settings.github_token
+                if token:
+                    clone_url = f"https://{token}@github.com/{repo_info['owner']}/{repo_info['name']}.git"
+                else:
+                    clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
+
+                self.logger.info("Cloning repository...")
+                clone_result = subprocess.run(
+                    ["git", "clone", "--depth=1", clone_url, tmpdir],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                if clone_result.returncode != 0:
+                    error_msg = clone_result.stderr.replace(token, "***") if token else clone_result.stderr
+                    self._add_issue(
+                        IssueSeverity.CRITICAL,
+                        IssueType.BUILD_ERROR,
+                        f"Failed to clone repo: {error_msg[:200]}",
+                    )
+                    return
+
+                subprocess.run(["git", "config", "user.email", "factory@vineyard.dev"], cwd=tmpdir, capture_output=True)
+                subprocess.run(["git", "config", "user.name", "Vineyard Factory"], cwd=tmpdir, capture_output=True)
+
+                # 1. bundle install
+                self.logger.info("Running bundle install...")
+                install_result = subprocess.run(
+                    ["bundle", "install"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+
+                if install_result.returncode != 0:
+                    self._add_issue(
+                        IssueSeverity.CRITICAL,
+                        IssueType.BUILD_ERROR,
+                        "bundle install failed",
+                        details={"stderr": install_result.stderr[:500]},
+                    )
+                    return
+
+                # 2. bundle audit
+                self.logger.info("Running bundle audit...")
+                audit_result = subprocess.run(
+                    ["bundle", "audit", "check", "--update"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                if audit_result.returncode != 0:
+                    for line in audit_result.stdout.split("\n"):
+                        if "CVE-" in line or "GHSA-" in line:
+                            self._add_issue(
+                                IssueSeverity.HIGH,
+                                IssueType.VULNERABLE_DEPENDENCY,
+                                f"Security vulnerability: {line[:100]}",
+                            )
+
+                # 3. RuboCop with auto-fix
+                self.logger.info("Running bundle exec rubocop -A...")
+                rubocop_result = subprocess.run(
+                    ["bundle", "exec", "rubocop", "-A", "--format", "simple"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+
+                status_result = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                )
+                if status_result.stdout.strip():
+                    local_fixes_made = True
+
+                if rubocop_result.returncode != 0:
+                    offense_pattern = r'([^:]+):(\d+):\d+:\s+(\w):\s+(.+)'
+                    for match in re.finditer(offense_pattern, rubocop_result.stdout):
+                        severity = IssueSeverity.HIGH if match.group(3) == 'E' else IssueSeverity.MEDIUM
+                        self._add_issue(
+                            severity,
+                            IssueType.LINT_ERROR,
+                            f"{match.group(4)}",
+                            file=match.group(1),
+                        )
+
+                # 4. Brakeman
+                self.logger.info("Running bundle exec brakeman...")
+                brakeman_result = subprocess.run(
+                    ["bundle", "exec", "brakeman", "-q", "--no-pager", "--format", "json"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+
+                if brakeman_result.returncode != 0:
+                    try:
+                        brakeman_data = json.loads(brakeman_result.stdout)
+                        for warning in brakeman_data.get("warnings", [])[:5]:
+                            self._add_issue(
+                                IssueSeverity.HIGH,
+                                IssueType.SECURITY_ISSUE,
+                                f"Brakeman: {warning.get('message', 'Security issue')}",
+                                file=warning.get("file"),
+                                details=warning,
+                            )
+                    except json.JSONDecodeError:
+                        pass
+
+                # 5. RSpec tests
+                self.logger.info("Running bundle exec rspec...")
+                test_result = subprocess.run(
+                    ["bundle", "exec", "rspec", "--format", "progress"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env={**os.environ, "RAILS_ENV": "test"},
+                )
+
+                if test_result.returncode != 0:
+                    failure_pattern = r'rspec\s+([^\s:]+):(\d+)'
+                    for match in re.finditer(failure_pattern, test_result.stdout):
+                        self._add_issue(
+                            IssueSeverity.HIGH,
+                            IssueType.TEST_FAILURE,
+                            f"Test failed at line {match.group(2)}",
+                            file=match.group(1),
+                        )
+                else:
+                    self.logger.info("All tests passed!")
+
+                # 6. Asset precompilation
+                self.logger.info("Running assets:precompile...")
+                build_result = subprocess.run(
+                    ["bundle", "exec", "rails", "assets:precompile"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    env={**os.environ, "RAILS_ENV": "production", "SECRET_KEY_BASE_DUMMY": "1"},
+                )
+
+                if build_result.returncode != 0:
+                    self._add_issue(
+                        IssueSeverity.CRITICAL,
+                        IssueType.BUILD_ERROR,
+                        "Asset precompilation failed",
+                        details={"stderr": build_result.stderr[:500]},
+                    )
+                    return
+
+                self.logger.info("Build passed!")
+
+                # 7. Commit and push fixes
+                if local_fixes_made:
+                    self.logger.info("Committing and pushing local fixes...")
+                    subprocess.run(["git", "add", "."], cwd=tmpdir, capture_output=True)
+                    commit_result = subprocess.run(
+                        ["git", "commit", "-m", "fix(qa): Auto-remediation by QA agent\n\n- rubocop -A"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    if commit_result.returncode == 0:
+                        push_result = subprocess.run(
+                            ["git", "push"],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+
+                        if push_result.returncode == 0:
+                            self.logger.info("Successfully pushed local fixes to GitHub")
+                        else:
+                            error_msg = push_result.stderr.replace(token, "***") if token else push_result.stderr
+                            self._add_issue(
+                                IssueSeverity.WARNING,
+                                IssueType.PUSH_FAILED,
+                                f"Failed to push local fixes: {error_msg[:200]}",
+                            )
+
+                self.logger.info("Full build validation completed!")
+
+        except subprocess.TimeoutExpired as e:
+            self._add_issue(
+                IssueSeverity.WARNING,
+                IssueType.BUILD_ERROR,
+                f"Build validation timed out at step: {e.cmd[0] if e.cmd else 'unknown'}",
+            )
+        except Exception as e:
+            self._add_issue(
+                IssueSeverity.WARNING,
+                IssueType.BUILD_ERROR,
+                f"Build validation error: {e}",
+            )
+
+    # =========================================================================
+    # Linear Tracking Methods
+    # =========================================================================
+
     def _init_linear_tracking(self, state: FactoryState) -> None:
         """Initialize Linear tracker from state."""
         if state.linear_phase_issues and state.linear_team_id:
             self.linear_tracker = linear.FactoryLinearTracker(
                 project_id=state.handoff.linear_project_id,
-                product_name=state.handoff.opportunity.name,
+                product_name=state.handoff.prd_input.name,
                 execution_id=state.execution_id,
             )
             self.linear_tracker.team_id = state.linear_team_id
@@ -334,6 +706,10 @@ Issues found will be auto-fixed when possible.
             f"## ❌ QA Validation Failed\n\n**Error:** {error}"
         )
 
+    # =========================================================================
+    # Issue Tracking Methods
+    # =========================================================================
+
     def _add_issue(
         self,
         severity: IssueSeverity,
@@ -380,6 +756,10 @@ Issues found will be auto-fixed when possible.
             linear.add_comment(issue.linear_issue_id, f"✅ Auto-fixed: {fix_action}")
             linear.complete_issue(issue.linear_issue_id, self.linear_tracker.team_id)
 
+    # =========================================================================
+    # Validation Methods
+    # =========================================================================
+
     def _fix_gemfile(
         self, files_dict: dict[str, GeneratedFile], state: FactoryState
     ) -> None:
@@ -396,7 +776,6 @@ Issues found will be auto-fixed when possible.
         content = gemfile.content
         modified = False
 
-        # Check for required gems
         for gem, version in self.REQUIRED_GEMS.items():
             gem_pattern = rf'gem\s+["\']{ re.escape(gem)}["\']'
             if not re.search(gem_pattern, content):
@@ -407,13 +786,11 @@ Issues found will be auto-fixed when possible.
                     file="Gemfile",
                 )
 
-                # Add the gem
                 if version:
                     gem_line = f'gem "{gem}", "{version}"'
                 else:
                     gem_line = f'gem "{gem}"'
 
-                # Find a good place to add it (after source line)
                 if 'source "https://rubygems.org"' in content:
                     content = content.replace(
                         'source "https://rubygems.org"',
@@ -438,7 +815,6 @@ Issues found will be auto-fixed when possible.
         self, files_dict: dict[str, GeneratedFile], state: FactoryState
     ) -> None:
         """Detect and generate missing structural files."""
-        # Check required files
         for path, info in self.REQUIRED_FILES.items():
             if path not in files_dict:
                 issue = self._add_issue(
@@ -458,7 +834,6 @@ Issues found will be auto-fixed when possible.
                     self.files_modified.append(path)
                     self._mark_issue_fixed(issue, f"Generated {path}")
 
-        # Check recommended files
         for path, info in self.RECOMMENDED_FILES.items():
             if path not in files_dict:
                 self._add_issue(
@@ -485,35 +860,23 @@ Issues found will be auto-fixed when possible.
         self, path: str, state: FactoryState
     ) -> Optional[str]:
         """Generate content for a missing file."""
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
 
         templates = {
             "config/routes.rb": '''Rails.application.routes.draw do
-  # Health check
   get "health", to: "health#show"
-
-  # Devise authentication
   devise_for :users
-
-  # Marketing pages
   root "pages#home"
   get "pricing", to: "pages#pricing"
   get "about", to: "pages#about"
-
-  # App routes (authenticated)
   authenticate :user do
     get "dashboard", to: "dashboard#show"
     resource :settings, only: [:show, :update]
   end
-
-  # API
   namespace :api do
     namespace :v1 do
-      # Add API resources here
     end
   end
-
-  # Webhooks
   namespace :webhooks do
     post "stripe", to: "stripe#create"
   end
@@ -537,17 +900,14 @@ end
             "app/views/layouts/application.html.erb": f'''<!DOCTYPE html>
 <html>
   <head>
-    <title>{opp.name}</title>
+    <title>{prd_input.name}</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta name="description" content="{opp.one_liner[:150] if opp.one_liner else opp.name}">
     <%%= csrf_meta_tags %>
     <%%= csp_meta_tag %>
-
     <%%= stylesheet_link_tag "tailwind", "inter-font", "data-turbo-track": "reload" %>
     <%%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
     <%%= javascript_importmap_tags %>
   </head>
-
   <body class="bg-gray-50">
     <%%= render "layouts/flash" %>
     <%%= yield %>
@@ -571,42 +931,6 @@ production:
   <<: *default
   url: <%%= ENV["DATABASE_URL"] %>
 ''',
-            "public/404.html": '''<!DOCTYPE html>
-<html>
-<head>
-  <title>Page Not Found</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
-    h1 { font-size: 2rem; }
-    p { color: #666; }
-  </style>
-</head>
-<body>
-  <h1>Page Not Found</h1>
-  <p>The page you were looking for doesn't exist.</p>
-  <a href="/">Go Home</a>
-</body>
-</html>
-''',
-            "public/500.html": '''<!DOCTYPE html>
-<html>
-<head>
-  <title>Server Error</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
-    h1 { font-size: 2rem; }
-    p { color: #666; }
-  </style>
-</head>
-<body>
-  <h1>Something Went Wrong</h1>
-  <p>We're sorry, but something went wrong on our end.</p>
-  <a href="/">Go Home</a>
-</body>
-</html>
-''',
         }
 
         return templates.get(path)
@@ -621,7 +945,6 @@ production:
 
         content = routes_file.content
 
-        # Check for essential routes
         essential_routes = [
             ("root", "Root route"),
             ("devise_for", "Devise authentication"),
@@ -682,249 +1005,6 @@ production:
                 IssueSeverity.CRITICAL,
                 IssueType.PUSH_FAILED,
                 f"Failed to push fixes to GitHub: {e}",
-            )
-
-    def _full_build_validation(
-        self,
-        repo_info: dict,
-        files_dict: dict[str, GeneratedFile],
-        state: FactoryState,
-    ) -> None:
-        """
-        Clone repo and run full validation suite:
-        1. bundle install
-        2. bundle audit --fix
-        3. bundle exec rubocop -A
-        4. bundle exec rails db:migrate (setup)
-        5. bundle exec rspec
-        6. RAILS_ENV=production bundle exec rails assets:precompile
-        7. Commit and push any fixes
-        """
-        import os
-        import subprocess
-        import tempfile
-
-        self.logger.info("Starting full build validation for Rails...")
-
-        local_fixes_made = False
-
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Clone with authentication for private repos
-                token = settings.github_token
-                if token:
-                    clone_url = f"https://{token}@github.com/{repo_info['owner']}/{repo_info['name']}.git"
-                else:
-                    clone_url = f"https://github.com/{repo_info['owner']}/{repo_info['name']}.git"
-
-                self.logger.info("Cloning repository...")
-                clone_result = subprocess.run(
-                    ["git", "clone", "--depth=1", clone_url, tmpdir],
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-
-                if clone_result.returncode != 0:
-                    error_msg = clone_result.stderr.replace(token, "***") if token else clone_result.stderr
-                    self._add_issue(
-                        IssueSeverity.CRITICAL,
-                        IssueType.BUILD_ERROR,
-                        f"Failed to clone repo: {error_msg[:200]}",
-                    )
-                    return
-
-                # Configure git for commits
-                subprocess.run(["git", "config", "user.email", "factory@vineyard.dev"], cwd=tmpdir, capture_output=True)
-                subprocess.run(["git", "config", "user.name", "Vineyard Factory"], cwd=tmpdir, capture_output=True)
-
-                # 1. bundle install
-                self.logger.info("Running bundle install...")
-                install_result = subprocess.run(
-                    ["bundle", "install"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-
-                if install_result.returncode != 0:
-                    self._add_issue(
-                        IssueSeverity.CRITICAL,
-                        IssueType.BUILD_ERROR,
-                        "bundle install failed",
-                        details={"stderr": install_result.stderr[:500]},
-                    )
-                    return
-
-                # 2. bundle audit
-                self.logger.info("Running bundle audit...")
-                audit_result = subprocess.run(
-                    ["bundle", "audit", "check", "--update"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-
-                if audit_result.returncode != 0:
-                    # Parse vulnerabilities
-                    for line in audit_result.stdout.split("\n"):
-                        if "CVE-" in line or "GHSA-" in line:
-                            self._add_issue(
-                                IssueSeverity.HIGH,
-                                IssueType.VULNERABLE_DEPENDENCY,
-                                f"Security vulnerability: {line[:100]}",
-                            )
-
-                # 3. RuboCop with auto-fix
-                self.logger.info("Running bundle exec rubocop -A...")
-                rubocop_result = subprocess.run(
-                    ["bundle", "exec", "rubocop", "-A", "--format", "simple"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                )
-
-                # Check if rubocop made changes
-                status_result = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                )
-                if status_result.stdout.strip():
-                    local_fixes_made = True
-                    self.logger.info("RuboCop auto-fixed some issues")
-
-                # Parse any remaining offenses
-                if rubocop_result.returncode != 0:
-                    offense_pattern = r'([^:]+):(\d+):\d+:\s+(\w):\s+(.+)'
-                    for match in re.finditer(offense_pattern, rubocop_result.stdout):
-                        severity = IssueSeverity.HIGH if match.group(3) == 'E' else IssueSeverity.MEDIUM
-                        self._add_issue(
-                            severity,
-                            IssueType.LINT_ERROR,
-                            f"{match.group(4)}",
-                            file=match.group(1),
-                        )
-
-                # 4. Brakeman security scan
-                self.logger.info("Running bundle exec brakeman...")
-                brakeman_result = subprocess.run(
-                    ["bundle", "exec", "brakeman", "-q", "--no-pager", "--format", "json"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                )
-
-                if brakeman_result.returncode != 0:
-                    try:
-                        brakeman_data = json.loads(brakeman_result.stdout)
-                        for warning in brakeman_data.get("warnings", [])[:5]:
-                            self._add_issue(
-                                IssueSeverity.HIGH,
-                                IssueType.SECURITY_ISSUE,
-                                f"Brakeman: {warning.get('message', 'Security issue')}",
-                                file=warning.get("file"),
-                                details=warning,
-                            )
-                    except json.JSONDecodeError:
-                        pass
-
-                # 5. Database setup and RSpec tests
-                self.logger.info("Running bundle exec rspec...")
-                test_result = subprocess.run(
-                    ["bundle", "exec", "rspec", "--format", "progress"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env={**os.environ, "RAILS_ENV": "test"},
-                )
-
-                if test_result.returncode != 0:
-                    # Parse RSpec failures
-                    failure_pattern = r'rspec\s+([^\s:]+):(\d+)'
-                    for match in re.finditer(failure_pattern, test_result.stdout):
-                        self._add_issue(
-                            IssueSeverity.HIGH,
-                            IssueType.TEST_FAILURE,
-                            f"Test failed at line {match.group(2)}",
-                            file=match.group(1),
-                        )
-                else:
-                    self.logger.info("All tests passed!")
-
-                # 6. Asset precompilation (production build check)
-                self.logger.info("Running assets:precompile...")
-                build_result = subprocess.run(
-                    ["bundle", "exec", "rails", "assets:precompile"],
-                    cwd=tmpdir,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    env={**os.environ, "RAILS_ENV": "production", "SECRET_KEY_BASE_DUMMY": "1"},
-                )
-
-                if build_result.returncode != 0:
-                    self._add_issue(
-                        IssueSeverity.CRITICAL,
-                        IssueType.BUILD_ERROR,
-                        "Asset precompilation failed",
-                        details={"stderr": build_result.stderr[:500]},
-                    )
-                    return
-
-                self.logger.info("Build passed!")
-
-                # 7. Commit and push fixes if any were made
-                if local_fixes_made:
-                    self.logger.info("Committing and pushing local fixes...")
-
-                    subprocess.run(["git", "add", "."], cwd=tmpdir, capture_output=True)
-
-                    commit_result = subprocess.run(
-                        ["git", "commit", "-m", "fix(qa): Auto-remediation by QA agent\n\n- rubocop -A"],
-                        cwd=tmpdir,
-                        capture_output=True,
-                        text=True,
-                    )
-
-                    if commit_result.returncode == 0:
-                        push_result = subprocess.run(
-                            ["git", "push"],
-                            cwd=tmpdir,
-                            capture_output=True,
-                            text=True,
-                            timeout=60,
-                        )
-
-                        if push_result.returncode == 0:
-                            self.logger.info("Successfully pushed local fixes to GitHub")
-                        else:
-                            error_msg = push_result.stderr.replace(token, "***") if token else push_result.stderr
-                            self._add_issue(
-                                IssueSeverity.WARNING,
-                                IssueType.PUSH_FAILED,
-                                f"Failed to push local fixes: {error_msg[:200]}",
-                            )
-
-                self.logger.info("Full build validation completed!")
-
-        except subprocess.TimeoutExpired as e:
-            self._add_issue(
-                IssueSeverity.WARNING,
-                IssueType.BUILD_ERROR,
-                f"Build validation timed out at step: {e.cmd[0] if e.cmd else 'unknown'}",
-            )
-        except Exception as e:
-            self._add_issue(
-                IssueSeverity.WARNING,
-                IssueType.BUILD_ERROR,
-                f"Build validation error: {e}",
             )
 
     def _issue_to_dict(self, issue: QAIssue) -> dict:

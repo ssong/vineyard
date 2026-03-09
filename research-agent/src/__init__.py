@@ -1,1 +1,0 @@
-"""Vineyard Research Agent package."""

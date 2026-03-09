@@ -21,36 +21,25 @@ def _register_output_types():
         return
 
     from src.models.outputs import (
-        ResearchEnrichmentOutput,
+        PRDAnalysisOutput,
         DesignOutput,
         SpecOutput,
         BuildOutput,
         LaunchPrepOutput,
-        LaunchOutput,
-        GrowthOutput,
-        UserPersona,
-        CompetitorFeatureMatrix,
-        SEOStrategy,
         FeatureSpec,
         APIEndpoint,
         DatabaseTable,
         EngineeringTask,
         GeneratedFile,
-        EmailSequence,
-        SocialContent,
-        ProductHuntListing,
-        GrowthExperiment,
     )
 
     _OUTPUT_TYPE_MAP = {
-        "research_enrichment": ResearchEnrichmentOutput,
+        "prd_analysis": PRDAnalysisOutput,
         "design": DesignOutput,
         "spec": SpecOutput,
         # Note: "build" is excluded because it stores a composite dict {"code": {...}, "test": {...}, ...}
         # rather than a BuildOutput dataclass. Access via build.get("code", {}).get("files", [])
         "launch_prep": LaunchPrepOutput,
-        "launch": LaunchOutput,
-        "growth": GrowthOutput,
     }
 
 
@@ -413,6 +402,7 @@ Please review and advise on next steps."""
     def _get_agent_icon(self) -> str:
         """Get emoji icon for this agent type."""
         icons = {
+            "PRDAnalysisAgent": "📝",
             "CodeAgent": "💻",
             "TestAgent": "🧪",
             "DevOpsAgent": "🚀",
@@ -420,8 +410,7 @@ Please review and advise on next steps."""
             "QAAgent": "🔍",
             "DesignAgent": "🎨",
             "SpecAgent": "📋",
-            "LaunchAgent": "🎯",
-            "GrowthAgent": "📈",
+            "MarketingAgent": "🚀",
         }
         return icons.get(self.name, "⚙️")
 

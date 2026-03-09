@@ -127,7 +127,7 @@ class SecurityAgent(BaseAgent):
         # Initialize subtask tracking
         self.init_subtask_tracking(state, parent_phase="build")
 
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
         prefs = state.handoff.build_preferences
         build = self.get_previous_output(state, "build")
 
@@ -215,7 +215,7 @@ class SecurityAgent(BaseAgent):
             recommendations = self._generate_recommendations(all_code_issues, vuln_check, dep_issues)
 
             # Generate security documentation
-            security_doc = self._generate_security_doc(opp, recommendations)
+            security_doc = self._generate_security_doc(prd_input, recommendations)
 
             # Push security findings to GitHub if there are critical issues
             if state.github_repo and any(i.get("severity") == "critical" for i in all_code_issues):
@@ -886,11 +886,11 @@ Recommend gems for:
 
         return recommendations
 
-    def _generate_security_doc(self, opp, recommendations: list) -> str:
+    def _generate_security_doc(self, prd_input, recommendations: list) -> str:
         """Generate security documentation for Rails application."""
         user_prompt = f"""Generate security documentation for this Rails product:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 FRAMEWORK: Ruby on Rails 7.1
 AUTH: Devise
 RECOMMENDATIONS: {len(recommendations)} items
@@ -913,7 +913,7 @@ Keep it concise but comprehensive.
             return llm.generate(SECURITY_AGENT_PROMPT, user_prompt)
         except Exception as e:
             self.logger.error(f"Failed to generate security doc: {e}")
-            return f"# {opp.name} Security Documentation\n\n[Generation pending]"
+            return f"# {prd_input.name} Security Documentation\n\n[Generation pending]"
 
     def _push_security_report(self, state: FactoryState, issues: list[dict]) -> None:
         """Push a security report to GitHub when critical issues are found."""

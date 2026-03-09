@@ -23,7 +23,7 @@ class DevOpsAgent(BaseAgent):
         # Initialize subtask tracking
         self.init_subtask_tracking(state, parent_phase="build")
 
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
         prefs = state.handoff.build_preferences
 
         try:
@@ -39,7 +39,7 @@ class DevOpsAgent(BaseAgent):
             compose = self.run_step(
                 "docker_compose",
                 "Generate docker-compose",
-                lambda: self._generate_docker_compose(opp, prefs),
+                lambda: self._generate_docker_compose(prd_input, prefs),
                 "Local development environment",
             )
 
@@ -47,7 +47,7 @@ class DevOpsAgent(BaseAgent):
             ci_cd = self.run_step(
                 "ci_cd",
                 "Generate CI/CD workflows",
-                lambda: self._generate_ci_cd(opp, prefs),
+                lambda: self._generate_ci_cd(prd_input, prefs),
                 "GitHub Actions for test and deploy",
             )
 
@@ -55,7 +55,7 @@ class DevOpsAgent(BaseAgent):
             deploy_config = self.run_step(
                 "deploy_config",
                 "Generate deployment config",
-                lambda: self._generate_deploy_config(opp, prefs),
+                lambda: self._generate_deploy_config(prd_input, prefs),
                 "Railway config, Procfile, Puma",
             )
 
@@ -71,7 +71,7 @@ class DevOpsAgent(BaseAgent):
             monitoring = self.run_step(
                 "monitoring",
                 "Generate monitoring config",
-                lambda: self._generate_monitoring_config(opp),
+                lambda: self._generate_monitoring_config(prd_input),
                 "Sentry, health checks, logging",
             )
 
@@ -165,11 +165,11 @@ The Dockerfile should:
             self.logger.error(f"Failed to generate Dockerfile: {e}")
             return []
 
-    def _generate_docker_compose(self, opp, prefs) -> list[GeneratedFile]:
+    def _generate_docker_compose(self, prd_input, prefs) -> list[GeneratedFile]:
         """Generate docker-compose for local development."""
         user_prompt = f"""Generate docker-compose.yml for Rails local development:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 DATABASE: {prefs.database_preference}
 
 Generate JSON with docker-compose:
@@ -233,11 +233,11 @@ Include:
             self.logger.error(f"Failed to generate docker-compose: {e}")
             return []
 
-    def _generate_ci_cd(self, opp, prefs) -> list[GeneratedFile]:
+    def _generate_ci_cd(self, prd_input, prefs) -> list[GeneratedFile]:
         """Generate GitHub Actions CI/CD workflow for Rails."""
         user_prompt = f"""Generate GitHub Actions CI/CD workflow for Rails:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 HOSTING: {prefs.hosting_preference}
 DATABASE: {prefs.database_preference}
 
@@ -298,13 +298,13 @@ Include proper environment variables:
             self.logger.error(f"Failed to generate CI/CD: {e}")
             return []
 
-    def _generate_deploy_config(self, opp, prefs) -> list[GeneratedFile]:
+    def _generate_deploy_config(self, prd_input, prefs) -> list[GeneratedFile]:
         """Generate Railway deployment configuration."""
         hosting = prefs.hosting_preference
 
         user_prompt = f"""Generate deployment config for {hosting}:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 HOSTING: {hosting}
 DATABASE: {prefs.database_preference}
 
@@ -453,11 +453,11 @@ docs/ENVIRONMENT.md should document:
             self.logger.error(f"Failed to generate env setup: {e}")
             return []
 
-    def _generate_monitoring_config(self, opp) -> list[GeneratedFile]:
+    def _generate_monitoring_config(self, prd_input) -> list[GeneratedFile]:
         """Generate monitoring and observability config for Rails."""
         user_prompt = f"""Generate monitoring configuration for Rails:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 
 Generate JSON with monitoring files:
 {{

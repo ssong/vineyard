@@ -461,7 +461,7 @@ async def handle_approval_request(
 
     # Add acknowledgment comment
     short_id = execution_id[:8]
-    opp_name = state.handoff.opportunity.name
+    opp_name = state.handoff.prd_input.name
     linear.add_comment(
         issue_id,
         f"✅ **Checkpoint approved** by {safe_commenter} via Linear\n\n"

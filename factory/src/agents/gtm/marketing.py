@@ -24,20 +24,20 @@ class MarketingAgent(BaseAgent):
         """
         self.log_start()
 
-        opp = state.handoff.opportunity
-        research = self.get_previous_output(state, "research_enrichment")
+        prd_input = state.handoff.prd_input
+        research = self.get_previous_output(state, "prd_analysis")
 
         # Generate landing page copy
-        landing_copy = self._generate_landing_page_copy(opp, research)
+        landing_copy = self._generate_landing_page_copy(prd_input, research)
 
         # Generate email sequences
-        email_sequences = self._generate_email_sequences(opp, research)
+        email_sequences = self._generate_email_sequences(prd_input, research)
 
         # Generate social content
-        social = self._generate_social_content(opp)
+        social = self._generate_social_content(prd_input)
 
         # Generate blog post outlines
-        blog_outlines = self._generate_blog_outlines(opp, research)
+        blog_outlines = self._generate_blog_outlines(prd_input, research)
         # Note: Linear task tracking is now handled at the runner level
 
         output = {
@@ -50,7 +50,7 @@ class MarketingAgent(BaseAgent):
         self.log_complete()
         return output
 
-    def _generate_landing_page_copy(self, opp, research) -> dict:
+    def _generate_landing_page_copy(self, prd_input, research) -> dict:
         """Generate landing page copy."""
         personas_text = ""
         if research and research.personas:
@@ -60,12 +60,8 @@ class MarketingAgent(BaseAgent):
 
         user_prompt = f"""Generate landing page copy for:
 
-PRODUCT: {opp.name}
-ONE-LINER: {opp.one_liner}
-PROBLEM: {opp.problem_statement}
-TARGET: {opp.target_market_description}
-DIFFERENTIATION: {opp.differentiation_angle}
-PRICING: ${opp.suggested_price_low/100} - ${opp.suggested_price_high/100}/month
+PRODUCT: {prd_input.name}
+PRD: {prd_input.prd_text[:1000]}
 
 PERSONAS:
 {personas_text}
@@ -112,15 +108,14 @@ Generate JSON with landing page sections:
             return llm.generate_json(MARKETING_AGENT_PROMPT, user_prompt)
         except Exception as e:
             self.logger.error(f"Failed to generate landing copy: {e}")
-            return {"hero": {"headline": opp.one_liner}}
+            return {"hero": {"headline": prd_input.name}}
 
-    def _generate_email_sequences(self, opp, research) -> list[EmailSequence]:
+    def _generate_email_sequences(self, prd_input, research) -> list[EmailSequence]:
         """Generate email sequences."""
         user_prompt = f"""Generate email sequences for:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.detailed_description}
-TARGET: {opp.target_market_description}
+PRODUCT: {prd_input.name}
+PRD: {prd_input.prd_text[:500]}
 
 Generate JSON with email sequences:
 {{
@@ -130,13 +125,13 @@ Generate JSON with email sequences:
             "emails": [
                 {{
                     "name": "Welcome Email",
-                    "subject": "Welcome to {opp.name}! Here's how to get started",
+                    "subject": "Welcome to {prd_input.name}! Here's how to get started",
                     "body_html": "<HTML content>",
                     "send_delay_hours": 0
                 }},
                 {{
                     "name": "Day 2 Tips",
-                    "subject": "3 tips to get more from {opp.name}",
+                    "subject": "3 tips to get more from {prd_input.name}",
                     "body_html": "<HTML content>",
                     "send_delay_hours": 48
                 }}
@@ -172,13 +167,12 @@ Include:
             self.logger.error(f"Failed to generate email sequences: {e}")
             return []
 
-    def _generate_social_content(self, opp) -> SocialContent:
+    def _generate_social_content(self, prd_input) -> SocialContent:
         """Generate social media content."""
         user_prompt = f"""Generate social media content for launch:
 
-PRODUCT: {opp.name}
-ONE-LINER: {opp.one_liner}
-DIFFERENTIATION: {opp.differentiation_angle}
+PRODUCT: {prd_input.name}
+PRD: {prd_input.prd_text[:500]}
 
 Generate JSON:
 {{
@@ -210,7 +204,7 @@ Generate JSON:
                 twitter_launch_tweet="",
             )
 
-    def _generate_blog_outlines(self, opp, research) -> list[dict]:
+    def _generate_blog_outlines(self, prd_input, research) -> list[dict]:
         """Generate SEO blog post outlines."""
         seo_keywords = []
         if research and research.seo_strategy:
@@ -218,9 +212,9 @@ Generate JSON:
 
         user_prompt = f"""Generate blog post outlines for SEO:
 
-PRODUCT: {opp.name}
+PRODUCT: {prd_input.name}
 TARGET KEYWORDS: {seo_keywords}
-PROBLEM: {opp.problem_statement}
+PRD: {prd_input.prd_text[:500]}
 
 Generate JSON with blog outlines:
 {{

@@ -19,109 +19,90 @@ class TaskConfig(TypedDict):
 
 # Task definitions for each phase
 PHASE_TASKS: dict[str, list[TaskConfig]] = {
-    "research_enrichment": [
+    "prd_analysis": [
         {
-            "key": "market_analysis",
-            "title": "Analyze market size and trends",
-            "objective": "Determine the total addressable market (TAM), serviceable addressable market (SAM), and serviceable obtainable market (SOM) for this opportunity.",
-            "approach": "Will analyze market size using: (1) target market description from opportunity, (2) pricing assumptions, (3) competitor revenue estimates where available. Will apply conservative, moderate, and optimistic assumptions.",
+            "key": "gap_analysis",
+            "title": "Analyze PRD for gaps and ambiguities",
+            "objective": "Identify missing sections, unclear requirements, and areas needing clarification in the submitted PRD.",
+            "approach": "Will analyze the PRD for: (1) missing user personas or unclear target audience, (2) vague scope or undefined MVP boundaries, (3) absent success metrics, (4) missing edge cases, (5) unclear technical constraints.",
             "inputs": [
-                "Opportunity target market description",
-                "Suggested pricing tiers",
-                "Category and segment info",
+                "Raw PRD text from user submission",
+                "Additional context if provided",
             ],
-            "expected_output": "Market analysis with TAM/SAM/SOM estimates and growth projections.",
+            "expected_output": "List of identified gaps and clarifying questions.",
         },
         {
-            "key": "competitor_research",
-            "title": "Research competitor landscape",
-            "objective": "Map the competitive landscape with feature comparisons and positioning analysis.",
-            "approach": "Will identify top 5 competitors by: (1) analyzing direct competitors from opportunity, (2) feature-by-feature comparison matrix, (3) pricing analysis, (4) strengths and weaknesses assessment.",
+            "key": "qa_session",
+            "title": "Clarification Q&A with submitter",
+            "objective": "Get answers to critical questions from the PRD submitter to fill gaps.",
+            "approach": "Will post clarifying questions to Slack thread, wait for user responses (up to 30 min timeout), and collect answers.",
             "inputs": [
-                "Direct competitors list from opportunity",
-                "Competitor weaknesses from initial research",
-                "Differentiation angle",
+                "Identified gaps from analysis",
+                "Slack channel and thread info",
             ],
-            "expected_output": "Competitor feature matrix with pricing, strengths, and weaknesses for each.",
+            "expected_output": "Q&A pairs with user responses.",
         },
         {
-            "key": "persona_development",
-            "title": "Develop target user personas",
-            "objective": "Create detailed user personas representing the target audience segments.",
-            "approach": "Will create 2-4 user personas based on: (1) target market description, (2) problem statement and pain points, (3) business model. Each persona includes demographics, role, pain points, goals, and jobs-to-be-done.",
+            "key": "prd_enrichment",
+            "title": "Enrich PRD with structured content",
+            "objective": "Produce a comprehensive, structured PRD incorporating user answers and filling remaining gaps.",
+            "approach": "Will take the original PRD and Q&A answers to produce: (1) structured problem statement, (2) target user definitions, (3) MVP scope, (4) success metrics, (5) feature list with priorities.",
             "inputs": [
-                "Target market description",
-                "Problem statement",
-                "Business model",
-                "Target segment",
+                "Original PRD text",
+                "Q&A pairs",
+                "Gap analysis results",
             ],
-            "expected_output": "2-4 detailed user personas with demographics, pain points, and JTBD.",
-        },
-        {
-            "key": "seo_strategy",
-            "title": "Define SEO and content strategy",
-            "objective": "Identify target keywords and content opportunities for organic growth.",
-            "approach": "Will analyze: (1) primary keywords from product name and category, (2) long-tail keyword opportunities, (3) competitor keyword gaps, (4) content type recommendations (blog, guides, comparisons).",
-            "inputs": [
-                "Product name and one-liner",
-                "Category and target segment",
-                "Competitor names",
-            ],
-            "expected_output": "SEO strategy with keyword targets, content recommendations, and priority ranking.",
+            "expected_output": "Enriched PRD in markdown with all sections filled.",
         },
     ],
-    
+
     "design": [
         {
-            "key": "prd",
-            "title": "Write Product Requirements Document",
-            "objective": "Create a comprehensive PRD that defines the product vision, goals, and requirements.",
-            "approach": "Will generate PRD with: (1) problem statement and goals, (2) target users from personas, (3) core features (P0/P1/P2), (4) user stories, (5) success metrics. Format follows standard SaaS PRD template.",
+            "key": "prd_enhancement",
+            "title": "Enhance PRD with design specifications",
+            "objective": "Add structured design sections to the enriched PRD including feature priorities and acceptance criteria.",
+            "approach": "Will enhance PRD with: (1) feature priority matrix (P0/P1/P2), (2) detailed user stories in Given/When/Then format, (3) success metrics with targets, (4) edge cases.",
             "inputs": [
-                "Research enrichment output (personas, market analysis)",
-                "Opportunity description and problem statement",
-                "Pricing tiers",
+                "Enriched PRD from PRD Analysis phase",
+                "Target users and core problem",
             ],
-            "expected_output": "Complete PRD in markdown with problem statement, features, user stories, and metrics.",
+            "expected_output": "Complete enhanced PRD with design specifications.",
         },
         {
             "key": "user_flows",
             "title": "Create user flow diagrams",
             "objective": "Map the key user journeys through the product.",
-            "approach": "Will design user flows for: (1) signup to activation, (2) core value loop, (3) upgrade/payment flow, (4) key error/edge cases. Each flow includes screens, actions, and decision points.",
+            "approach": "Will design user flows for: (1) signup to activation, (2) core value loop, (3) upgrade/payment flow, (4) key error/edge cases.",
             "inputs": [
-                "PRD features and user stories",
-                "Business model (payment flows)",
-                "Target personas",
+                "Enhanced PRD features and user stories",
+                "Target user definitions",
             ],
-            "expected_output": "User flow definitions with steps, screens, and success metrics for each flow.",
+            "expected_output": "User flow definitions with steps, screens, and success metrics.",
         },
         {
             "key": "features",
             "title": "Define feature specifications",
             "objective": "Create detailed specifications for each feature with acceptance criteria.",
-            "approach": "Will generate feature specs with: (1) feature name and description, (2) priority (P0/P1/P2), (3) user stories, (4) acceptance criteria (Given/When/Then), (5) technical notes.",
+            "approach": "Will generate feature specs with: (1) name and description, (2) priority (P0/P1/P2), (3) user stories, (4) acceptance criteria (Given/When/Then), (5) technical notes.",
             "inputs": [
-                "PRD feature list",
-                "Technical components from opportunity",
-                "Build complexity estimate",
+                "Enhanced PRD feature list",
+                "Tech stack preference",
             ],
-            "expected_output": "Feature specifications with user stories and acceptance criteria for each.",
+            "expected_output": "Feature specifications with user stories and acceptance criteria.",
         },
         {
             "key": "ui_copy",
             "title": "Generate UI copy and messaging",
             "objective": "Create the key UI text and messaging for the application.",
-            "approach": "Will generate: (1) landing page headlines and CTAs, (2) onboarding messages, (3) success/error states, (4) empty states, (5) email notification copy. Voice should match target audience.",
+            "approach": "Will generate: (1) landing page headlines and CTAs, (2) onboarding messages, (3) success/error states, (4) empty states.",
             "inputs": [
-                "Product one-liner and description",
-                "Target market description",
-                "Personas",
+                "Product name and summary",
+                "Target users",
             ],
-            "expected_output": "UI copy dictionary with headlines, CTAs, messages, and notification templates.",
+            "expected_output": "UI copy dictionary with headlines, CTAs, messages.",
         },
     ],
-    
+
     "spec": [
         {
             "key": "architecture",
@@ -168,12 +149,11 @@ PHASE_TASKS: dict[str, list[TaskConfig]] = {
                 "Architecture design",
                 "API endpoints",
                 "Feature specifications",
-                "Build complexity estimate",
             ],
             "expected_output": "Engineering task list with descriptions, estimates, and dependencies.",
         },
     ],
-    
+
     "build": [
         {
             "key": "code_generation",
@@ -223,83 +203,19 @@ PHASE_TASKS: dict[str, list[TaskConfig]] = {
             "expected_output": "Infrastructure files pushed to repository, ready for deployment.",
         },
     ],
-    
+
     "launch_prep": [
         {
             "key": "marketing_content",
             "title": "Create marketing content",
             "objective": "Generate marketing copy, landing page content, and launch materials.",
-            "approach": "Will create: (1) landing page sections (hero, features, pricing, testimonials), (2) email sequences (welcome, onboarding), (3) social media content for launch.",
+            "approach": "Will create: (1) landing page sections (hero, features, pricing, testimonials), (2) launch checklist with key milestones.",
             "inputs": [
-                "Product description and one-liner",
+                "Product name and summary",
                 "Feature specifications",
-                "Pricing tiers",
-                "Target personas",
+                "Target users",
             ],
-            "expected_output": "Marketing content package with landing page copy, emails, and social posts.",
-        },
-        {
-            "key": "support_setup",
-            "title": "Set up customer support infrastructure",
-            "objective": "Create support documentation and help desk configuration.",
-            "approach": "Will generate: (1) FAQ document, (2) troubleshooting guides, (3) knowledge base structure, (4) support email templates.",
-            "inputs": [
-                "Feature specifications",
-                "Common user flows",
-                "Known edge cases",
-            ],
-            "expected_output": "Support documentation package with FAQ, guides, and templates.",
-        },
-    ],
-    
-    "launch": [
-        {
-            "key": "deployment",
-            "title": "Deploy to production",
-            "objective": "Execute production deployment and verify the application is live.",
-            "approach": "Will: (1) trigger production deployment via CI/CD, (2) verify health checks pass, (3) confirm core functionality works, (4) document the live URLs.",
-            "inputs": [
-                "Deployment configuration",
-                "Environment secrets (configured externally)",
-            ],
-            "expected_output": "Live production URLs and deployment confirmation.",
-        },
-        {
-            "key": "launch_announcement",
-            "title": "Execute launch announcement",
-            "objective": "Publish launch announcements across configured channels.",
-            "approach": "Will: (1) prepare Product Hunt listing if configured, (2) schedule social media posts, (3) send launch email to waitlist.",
-            "inputs": [
-                "Marketing content from launch prep",
-                "Social channel configurations",
-            ],
-            "expected_output": "Launch announcement URLs and scheduled post confirmations.",
-        },
-    ],
-    
-    "growth": [
-        {
-            "key": "growth_experiments",
-            "title": "Design growth experiments",
-            "objective": "Create a prioritized list of growth experiments to run.",
-            "approach": "Will design: (1) acquisition experiments (SEO, content, ads), (2) activation experiments (onboarding optimization), (3) retention experiments (engagement features).",
-            "inputs": [
-                "Launch metrics baseline",
-                "User personas",
-                "Business model",
-            ],
-            "expected_output": "Growth experiment backlog with hypotheses, metrics, and priority ranking.",
-        },
-        {
-            "key": "iteration_roadmap",
-            "title": "Plan iteration roadmap",
-            "objective": "Define the next iteration of features based on launch learnings.",
-            "approach": "Will plan: (1) quick wins and bug fixes, (2) P1 features from spec, (3) user feedback integration points.",
-            "inputs": [
-                "P1/P2 features from spec",
-                "Initial user feedback (when available)",
-            ],
-            "expected_output": "Next iteration roadmap with prioritized features and timeline.",
+            "expected_output": "Marketing content package with landing page copy and launch checklist.",
         },
     ],
 }

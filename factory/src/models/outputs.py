@@ -5,58 +5,22 @@ from typing import Optional
 
 
 # =============================================================================
-# RESEARCH ENRICHMENT OUTPUTS
+# PRD ANALYSIS OUTPUTS
 # =============================================================================
 
 
 @dataclass
-class UserPersona:
-    """Detailed user persona with Jobs-to-be-Done."""
+class PRDAnalysisOutput:
+    """Output from PRD Analysis phase."""
 
-    name: str
-    role: str
-    demographics: str
-    goals: list[str]
-    frustrations: list[str]
-    jobs_to_be_done: list[str]
-    willingness_to_pay: str
-    acquisition_channels: list[str]
-
-
-@dataclass
-class CompetitorFeatureMatrix:
-    """Detailed competitor comparison."""
-
-    competitor_name: str
-    website: str
-    pricing_tiers: list[dict]
-    feature_comparison: dict[str, bool]
-    key_strengths: list[str]
-    key_gaps: list[str]
-    review_summary: str
-
-
-@dataclass
-class SEOStrategy:
-    """Keyword and content strategy."""
-
-    primary_keywords: list[dict]
-    long_tail_keywords: list[str]
-    content_opportunities: list[str]
-    competitor_ranking_gaps: list[str]
-    estimated_organic_potential: str
-
-
-@dataclass
-class ResearchEnrichmentOutput:
-    """Output from Research Enrichment phase."""
-
-    personas: list[UserPersona]
-    primary_persona: str
-    competitor_matrix: list[CompetitorFeatureMatrix]
-    competitive_landscape_miro_url: str
-    positioning_statement: str
-    seo_strategy: SEOStrategy
+    product_name: str
+    product_summary: str
+    enriched_prd_markdown: str
+    identified_gaps: list[str]
+    clarification_qa: list[dict]  # [{"question": str, "answer": str}]
+    target_users: list[str]
+    core_problem: str
+    mvp_scope_notes: str
     linear_issues: list[str] = field(default_factory=list)
 
 
@@ -83,7 +47,6 @@ class DesignOutput:
 
     prd_markdown: str
     user_flows: list[dict]
-    user_flow_miro_url: str
     features: list[FeatureSpec]
     ui_copy: dict[str, str]
     linear_issues: list[str] = field(default_factory=list)
@@ -137,7 +100,6 @@ class SpecOutput:
     api_endpoints: list[APIEndpoint]
     database_schema: list[DatabaseTable]
     task_breakdown: list[EngineeringTask]
-    architecture_miro_url: str
     linear_issues: list[str] = field(default_factory=list)
 
 
@@ -174,86 +136,9 @@ class BuildOutput:
 
 
 @dataclass
-class EmailSequence:
-    """Email sequence content."""
-
-    name: str
-    subject: str
-    body_html: str
-    send_delay_hours: int
-
-
-@dataclass
-class SocialContent:
-    """Social media content."""
-
-    twitter_thread: list[str]
-    linkedin_post: str
-    twitter_launch_tweet: str
-
-
-@dataclass
-class ProductHuntListing:
-    """Product Hunt listing content."""
-
-    tagline: str
-    description: str
-    first_comment: str
-    topics: list[str]
-
-
-@dataclass
 class LaunchPrepOutput:
     """Output from Launch Prep phase."""
 
     landing_page_copy: dict
-    email_sequences: list[EmailSequence]
-    social_content: SocialContent
-    product_hunt_listing: ProductHuntListing
     launch_checklist: list[dict]
-    linear_issues: list[str] = field(default_factory=list)
-
-
-# =============================================================================
-# LAUNCH OUTPUTS
-# =============================================================================
-
-
-@dataclass
-class LaunchOutput:
-    """Output from Launch phase."""
-
-    production_url: str
-    scheduled_posts: list[str]
-    email_broadcast_ids: list[str]
-    launch_metrics_dashboard_url: str
-    linear_issues: list[str] = field(default_factory=list)
-
-
-# =============================================================================
-# GROWTH OUTPUTS
-# =============================================================================
-
-
-@dataclass
-class GrowthExperiment:
-    """Growth experiment hypothesis."""
-
-    name: str
-    hypothesis: str
-    metric: str
-    success_criteria: str
-    implementation_notes: str
-
-
-@dataclass
-class GrowthOutput:
-    """Output from Growth phase."""
-
-    experiments: list[GrowthExperiment]
-    analytics_events: list[dict]
-    weekly_report_template: str
-    growth_playbook: str
-    faq_content: str
-    help_articles: list[dict]
     linear_issues: list[str] = field(default_factory=list)

@@ -45,17 +45,6 @@ class GitHubLimits:
     COMMIT_MESSAGE_SUBJECT = 72  # Conventional limit
 
 
-# Miro API limits
-# Source: https://help.miro.com/hc/en-us/articles/360017572094-Text
-class MiroLimits:
-    BOARD_NAME = 60
-    BOARD_DESCRIPTION = 300
-    SHAPE_CONTENT = 2000
-    STICKY_NOTE_CONTENT = 6000  # Same as text box limit
-    FRAME_TITLE = 200
-    TAG_NAME = 120
-
-
 # Slack API limits
 # Source: https://docs.slack.dev/reference/block-kit/blocks/section-block/
 class SlackLimits:

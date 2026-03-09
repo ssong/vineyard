@@ -12,7 +12,7 @@ from src.models import (
     FactoryState,
     SpecOutput,
 )
-from src.tools import llm, miro
+from src.tools import llm
 
 
 class SpecAgent(BaseAgent):
@@ -27,38 +27,33 @@ class SpecAgent(BaseAgent):
         """
         self.log_start()
 
-        opp = state.handoff.opportunity
+        prd_input = state.handoff.prd_input
         design = self.get_previous_output(state, "design")
         prefs = state.handoff.build_preferences
 
         # Generate technical spec
-        tech_spec = self._generate_tech_spec(opp, design, prefs)
+        tech_spec = self._generate_tech_spec(prd_input, design, prefs)
 
         # Generate API endpoints
-        api_endpoints = self._generate_api_endpoints(opp, design)
+        api_endpoints = self._generate_api_endpoints(prd_input, design)
 
         # Generate database schema
-        db_schema = self._generate_database_schema(opp, design)
-
-        # Create architecture Miro board
-        miro_url = self._create_architecture_board(opp, api_endpoints, db_schema)
+        db_schema = self._generate_database_schema(prd_input, design)
 
         # Generate task breakdown
-        tasks = self._generate_task_breakdown(opp, design, api_endpoints, db_schema)
-        # Note: Linear task tracking is now handled at the runner level
+        tasks = self._generate_task_breakdown(prd_input, design, api_endpoints, db_schema)
 
         output = SpecOutput(
             technical_spec_markdown=tech_spec,
             api_endpoints=api_endpoints,
             database_schema=db_schema,
             task_breakdown=tasks,
-            architecture_miro_url=miro_url,
         )
 
         self.log_complete()
         return output
 
-    def _generate_tech_spec(self, opp, design: DesignOutput, prefs) -> str:
+    def _generate_tech_spec(self, prd_input, design: DesignOutput, prefs) -> str:
         """Generate comprehensive technical specification."""
         features_text = ""
         if design and design.features:
@@ -66,12 +61,13 @@ class SpecAgent(BaseAgent):
                 [f"- {f.name} ({f.priority}): {f.description}" for f in design.features[:10]]
             )
 
+        prd_text = design.prd_markdown if design else prd_input.prd_text
+
         user_prompt = f"""Write a technical specification for this product:
 
-PRODUCT: {opp.name}
-DESCRIPTION: {opp.detailed_description}
-BUILD COMPLEXITY: {opp.build_complexity}
-BUILD TIME: {opp.estimated_build_weeks} weeks
+PRODUCT: {prd_input.name}
+PRD:
+{prd_text[:3000]}
 
 TECH STACK:
 - Frontend: {prefs.tech_stack.get('frontend', 'rails')}
@@ -98,7 +94,6 @@ Write a technical spec in markdown with:
 """
 
         try:
-            # Use extended thinking for architecture decisions
             return llm.generate(
                 SPEC_AGENT_PROMPT,
                 user_prompt,
@@ -108,9 +103,9 @@ Write a technical spec in markdown with:
             )
         except Exception as e:
             self.logger.error(f"Failed to generate tech spec: {e}")
-            return f"# {opp.name} Technical Specification\n\n[Generation failed]"
+            return f"# {prd_input.name} Technical Specification\n\n[Generation failed]"
 
-    def _generate_api_endpoints(self, opp, design: DesignOutput) -> list[APIEndpoint]:
+    def _generate_api_endpoints(self, prd_input, design: DesignOutput) -> list[APIEndpoint]:
         """Generate API endpoint specifications."""
         features_text = ""
         if design and design.features:
@@ -120,8 +115,7 @@ Write a technical spec in markdown with:
 
         user_prompt = f"""Design API endpoints for this product:
 
-PRODUCT: {opp.name}
-BUSINESS MODEL: {opp.business_model}
+PRODUCT: {prd_input.name}
 
 P0 FEATURES:
 {features_text}
@@ -155,7 +149,6 @@ Include:
 """
 
         try:
-            # Use extended thinking for API design decisions
             result = llm.generate_json(
                 SPEC_AGENT_PROMPT,
                 user_prompt,
@@ -182,13 +175,11 @@ Include:
             self.logger.error(f"Failed to generate API endpoints: {e}")
             return []
 
-    def _generate_database_schema(self, opp, design: DesignOutput) -> list[DatabaseTable]:
+    def _generate_database_schema(self, prd_input, design: DesignOutput) -> list[DatabaseTable]:
         """Generate database schema design."""
         user_prompt = f"""Design database schema for this product:
 
-PRODUCT: {opp.name}
-BUSINESS MODEL: {opp.business_model}
-TARGET: {opp.target_segment}
+PRODUCT: {prd_input.name}
 
 Generate JSON with database tables:
 {{
@@ -215,7 +206,6 @@ Include tables for:
 """
 
         try:
-            # Use extended thinking for database schema design
             result = llm.generate_json(
                 SPEC_AGENT_PROMPT,
                 user_prompt,
@@ -241,33 +231,9 @@ Include tables for:
             self.logger.error(f"Failed to generate database schema: {e}")
             return []
 
-    def _create_architecture_board(
-        self, opp, endpoints: list[APIEndpoint], tables: list[DatabaseTable]
-    ) -> str:
-        """Create Miro architecture diagram."""
-        try:
-            board = miro.create_board(
-                f"Architecture: {opp.name}",
-                "System architecture diagram",
-            )
-            board_id = board.get("id", "mock-id")
-
-            # Create main components
-            miro.create_shape(board_id, "Frontend\n(Hotwire)", "rectangle", 0, 0, 150, 80, "#bfdbfe")
-            miro.create_shape(board_id, "API\n(Rails)", "rectangle", 250, 0, 150, 80, "#bbf7d0")
-            miro.create_shape(board_id, "Database\n(PostgreSQL)", "rectangle", 500, 0, 150, 80, "#fed7aa")
-            miro.create_shape(board_id, "Auth\n(Devise)", "rectangle", 250, 150, 150, 80, "#fecaca")
-            miro.create_shape(board_id, "Payments\n(Stripe)", "rectangle", 250, 300, 150, 80, "#e9d5ff")
-
-            return board.get("viewLink", "")
-
-        except Exception as e:
-            self.logger.error(f"Failed to create Miro board: {e}")
-            return ""
-
     def _generate_task_breakdown(
         self,
-        opp,
+        prd_input,
         design: DesignOutput,
         endpoints: list[APIEndpoint],
         tables: list[DatabaseTable],
@@ -278,9 +244,7 @@ Include tables for:
 
         user_prompt = f"""Create engineering task breakdown for this product:
 
-PRODUCT: {opp.name}
-BUILD TIME: {opp.estimated_build_weeks} weeks
-COMPLEXITY: {opp.build_complexity}
+PRODUCT: {prd_input.name}
 
 P0 FEATURES:
 {chr(10).join([f"- {f.name}: {f.description}" for f in p0_features])}
@@ -317,7 +281,6 @@ Include tasks for:
 """
 
         try:
-            # Use extended thinking for task breakdown and estimation
             result = llm.generate_json(
                 SPEC_AGENT_PROMPT,
                 user_prompt,
@@ -343,4 +306,3 @@ Include tasks for:
         except Exception as e:
             self.logger.error(f"Failed to generate task breakdown: {e}")
             return []
-
