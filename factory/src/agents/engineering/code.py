@@ -49,8 +49,12 @@ class CodeAgent(BaseAgent):
             # Try Agent SDK mode first
             from src.tools.agent_runner import is_sdk_available
             if is_sdk_available():
-                self.logger.info("Using Agent SDK for code generation")
-                output = self._run_with_agent_sdk(state, prd_input, prefs, spec, design)
+                try:
+                    self.logger.info("Using Agent SDK for code generation")
+                    output = self._run_with_agent_sdk(state, prd_input, prefs, spec, design)
+                except Exception as sdk_err:
+                    self.logger.warning(f"Agent SDK failed, falling back to direct API: {sdk_err}")
+                    output = self._run_direct(state, prd_input, prefs, spec, design)
             else:
                 self.logger.info("Using direct API for code generation")
                 output = self._run_direct(state, prd_input, prefs, spec, design)

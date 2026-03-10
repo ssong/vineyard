@@ -27,19 +27,31 @@ def _get_api_key() -> str:
 
 
 def is_sdk_available() -> bool:
-    """Check if the Claude Agent SDK and CLI are available."""
+    """Check if the Claude Agent SDK and CLI are available.
+
+    Verifies both the Python package AND the claude CLI binary,
+    since the SDK launches claude as a subprocess.
+    """
     global _sdk_available
     if _sdk_available is not None:
         return _sdk_available
 
     try:
         import claude_agent_sdk  # noqa: F401
-        _sdk_available = True
-        logger.info("Claude Agent SDK is available")
     except ImportError:
         _sdk_available = False
         logger.info("Claude Agent SDK not installed, using direct API calls")
+        return _sdk_available
 
+    # Verify the claude CLI is actually available
+    import shutil
+    if shutil.which("claude") is None:
+        _sdk_available = False
+        logger.info("Claude CLI not found in PATH, Agent SDK disabled")
+        return _sdk_available
+
+    _sdk_available = True
+    logger.info("Claude Agent SDK and CLI are available")
     return _sdk_available
 
 

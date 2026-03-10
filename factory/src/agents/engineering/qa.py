@@ -240,11 +240,14 @@ class QAAgent(BaseAgent):
         """Run full build validation. Uses Agent SDK if available, otherwise direct."""
         from src.tools.agent_runner import is_sdk_available
         if is_sdk_available():
-            self.logger.info("Using Agent SDK for adaptive build validation")
-            self._full_build_validation_agent(repo_info, state)
-        else:
-            self.logger.info("Using direct build validation")
-            self._full_build_validation_direct(repo_info, files_dict, state)
+            try:
+                self.logger.info("Using Agent SDK for adaptive build validation")
+                self._full_build_validation_agent(repo_info, state)
+                return
+            except Exception as sdk_err:
+                self.logger.warning(f"Agent SDK validation failed, falling back to direct: {sdk_err}")
+        self.logger.info("Using direct build validation")
+        self._full_build_validation_direct(repo_info, files_dict, state)
 
     def _full_build_validation_agent(
         self,

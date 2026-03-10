@@ -40,16 +40,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     # Health check
     curl \
+    # Claude CLI (Node.js runtime)
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Install Claude CLI globally
+RUN npm install -g @anthropic-ai/claude-code@latest
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application code - keep original directory names!
+# Copy application code
 COPY main.py ./
-COPY research-agent/ ./research-agent/
 COPY factory/ ./factory/
 
 # Create required directories
@@ -71,9 +76,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# CRITICAL: Add both subdirectories to PYTHONPATH so internal imports work
-# Each project's internal `from src.*` imports will resolve correctly
-ENV PYTHONPATH=/app:/app/research-agent:/app/factory
+# Add factory to PYTHONPATH so internal `from src.*` imports resolve
+ENV PYTHONPATH=/app:/app/factory
 
 # Default: run both Slack bot and API server
 CMD ["python", "main.py"]
