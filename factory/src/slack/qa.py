@@ -12,13 +12,26 @@ _qa_sessions: dict[str, dict] = {}
 _qa_lock = threading.Lock()
 
 
-def post_questions(channel_id: str, thread_ts: str, questions: list[str]) -> None:
-    """Post formatted questions to a Slack thread.
+def has_active_session(channel_id: str, thread_ts: str) -> bool:
+    """Check if there's an active Q&A session for this channel/thread."""
+    session_key = f"{channel_id}:{thread_ts}"
+    with _qa_lock:
+        return session_key in _qa_sessions
+
+
+def post_questions(
+    channel_id: str,
+    thread_ts: str,
+    questions: list[str],
+    submitted_by: str | None = None,
+) -> None:
+    """Post formatted questions to a Slack thread and notify the submitter.
 
     Args:
         channel_id: Slack channel ID
         thread_ts: Thread timestamp to reply to
         questions: List of questions to post
+        submitted_by: Slack user ID of the PRD submitter (for DM notification)
     """
     from src.slack.app import app
 
@@ -88,6 +101,10 @@ def post_questions(channel_id: str, thread_ts: str, questions: list[str]) -> Non
                 "channel_id": channel_id,
                 "thread_ts": thread_ts,
             }
+
+        # Send DM to submitter so they know questions are waiting
+        if submitted_by:
+            _notify_submitter(app, channel_id, thread_ts, submitted_by, len(questions))
 
     except Exception as e:
         logger.error(f"Failed to post questions: {e}")
@@ -174,6 +191,42 @@ def signal_done(channel_id: str, thread_ts: str) -> None:
         if session:
             session["done_event"].set()
             logger.info(f"Q&A session done signal received for {session_key}")
+
+
+def _notify_submitter(app, channel_id: str, thread_ts: str, user_id: str, question_count: int):
+    """Send a DM to the PRD submitter notifying them about clarifying questions.
+
+    Also invites them to the channel if they're not already in it.
+    """
+    try:
+        # Invite submitter to the channel so they can see the thread
+        from src.slack.channels import add_user_to_channel
+        add_user_to_channel(channel_id, user_id)
+    except Exception as e:
+        logger.warning(f"Failed to invite submitter to channel: {e}")
+
+    try:
+        # Build permalink to the thread
+        permalink = ""
+        try:
+            result = app.client.chat_getPermalink(channel=channel_id, message_ts=thread_ts)
+            permalink = result.get("permalink", "")
+        except Exception:
+            pass
+
+        link_text = f"\n\n<{permalink}|View the thread>" if permalink else ""
+
+        app.client.chat_postMessage(
+            channel=user_id,  # DM by posting to user ID
+            text=(
+                f"👋 I have *{question_count} clarifying question{'s' if question_count != 1 else ''}* "
+                f"about your PRD. Please reply in the thread and click *Done Answering* "
+                f"(or type `done`) when finished.{link_text}"
+            ),
+        )
+        logger.info(f"Sent Q&A notification DM to {user_id}")
+    except Exception as e:
+        logger.warning(f"Failed to send Q&A notification DM: {e}")
 
 
 def _fetch_thread_replies(channel_id: str, thread_ts: str) -> list[str]:

@@ -228,7 +228,7 @@ def handle_prd_submission(ack: Ack, body: dict, view: dict):
         # Create factory run
         state = create_factory_run(handoff)
 
-        # Create Slack channels
+        # Create Slack channels and invite the submitter
         slack_channels = create_opportunity_channels(
             opportunity_slug=slug,
             opportunity_name=product_name,
@@ -237,6 +237,11 @@ def handle_prd_submission(ack: Ack, body: dict, view: dict):
 
         # Post initial message (becomes Q&A thread)
         main_channel = slack_channels.get("main")
+
+        # Invite the submitter to the main channel
+        if main_channel and user_id:
+            from src.slack.channels import add_user_to_channel
+            add_user_to_channel(main_channel, user_id)
         if main_channel:
             result = app.client.chat_postMessage(
                 channel=main_channel,
@@ -281,3 +286,41 @@ def handle_qa_done(ack: Ack, body: dict, respond):
     except Exception as e:
         logger.error(f"Failed to handle Q&A done: {e}")
         respond(text="Processing your answers...")
+
+
+@app.event("message")
+def handle_message_events(event: dict, say):
+    """Handle message events - used for Q&A thread replies."""
+    # Only care about threaded replies (not top-level messages)
+    thread_ts = event.get("thread_ts")
+    if not thread_ts:
+        return
+
+    # Ignore bot messages
+    if event.get("bot_id") or event.get("subtype") == "bot_message":
+        return
+
+    channel_id = event.get("channel", "")
+    text = (event.get("text") or "").strip()
+
+    if not text:
+        return
+
+    from src.slack.qa import has_active_session, record_answer, signal_done
+
+    # Check if this thread has an active Q&A session
+    if not has_active_session(channel_id, thread_ts):
+        return
+
+    # If user typed "done", signal completion
+    if text.lower() == "done":
+        signal_done(channel_id, thread_ts)
+        say(
+            text="✅ Got it! Processing your answers and continuing with the analysis...",
+            thread_ts=thread_ts,
+        )
+        return
+
+    # Otherwise record the answer
+    record_answer(channel_id, thread_ts, text)
+    logger.info(f"Recorded Q&A answer in {channel_id}:{thread_ts}")

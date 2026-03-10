@@ -117,8 +117,9 @@ Guidelines:
                 self.logger.warning("No Q&A thread timestamp")
                 return [{"question": q, "answer": "(no answer - no thread)"} for q in questions]
 
-            # Post questions
-            post_questions(channel_id, thread_ts, questions)
+            # Post questions (with submitter notification)
+            submitted_by = state.handoff.prd_input.submitted_by
+            post_questions(channel_id, thread_ts, questions, submitted_by=submitted_by)
 
             # Wait for answers
             answers = wait_for_answers(
