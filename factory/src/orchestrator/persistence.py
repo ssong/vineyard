@@ -208,13 +208,17 @@ def _deserialize_state(data: dict) -> FactoryState:
 
     # Deserialize build preferences
     bp_data = handoff_data.get("build_preferences", {})
-    build_prefs = BuildPreferences(
-        tech_stack=bp_data.get("tech_stack", BuildPreferences.tech_stack),
-        hosting_preference=bp_data.get("hosting_preference", "railway"),
-        database_preference=bp_data.get("database_preference", "railway"),
-        auth_preference=bp_data.get("auth_preference", "devise"),
-        payments_preference=bp_data.get("payments_preference", "stripe"),
-    ) if bp_data else BuildPreferences()
+    if bp_data:
+        defaults = BuildPreferences()
+        build_prefs = BuildPreferences(
+            tech_stack=bp_data.get("tech_stack", defaults.tech_stack),
+            hosting_preference=bp_data.get("hosting_preference", defaults.hosting_preference),
+            database_preference=bp_data.get("database_preference", defaults.database_preference),
+            auth_preference=bp_data.get("auth_preference", defaults.auth_preference),
+            payments_preference=bp_data.get("payments_preference", defaults.payments_preference),
+        )
+    else:
+        build_prefs = BuildPreferences()
 
     handoff = FactoryHandoff(
         handoff_id=handoff_data["handoff_id"],
