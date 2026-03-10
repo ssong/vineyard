@@ -117,13 +117,33 @@ def register_unified_command_handler(shared_app):
     @shared_app.command("/vineyard")
     def handle_vineyard_command(ack: Ack, respond: Respond, command: dict):
         """Unified handler for /vineyard command."""
-        ack()
-
         subcommand = command.get("text", "").strip().lower()
 
+        # For "new", open modal IMMEDIATELY — trigger_id expires in 3s.
+        # Call views_open before ack() to minimize latency.
         if subcommand == "new":
-            _handle_new_prd(respond, command, shared_app)
-        elif subcommand.startswith("resume"):
+            trigger_id = command.get("trigger_id")
+            if trigger_id:
+                try:
+                    shared_app.client.views_open(
+                        trigger_id=trigger_id,
+                        view=_build_prd_modal(),
+                    )
+                    ack()
+                    return
+                except Exception as e:
+                    logger.exception("Failed to open PRD modal")
+                    ack()
+                    respond(text=f"❌ Failed to open modal: {str(e)}")
+                    return
+            else:
+                ack()
+                respond(text="❌ Unable to open modal. Please try again.")
+                return
+
+        ack()
+
+        if subcommand.startswith("resume"):
             _handle_factory_resume(respond, command, shared_app)
         elif subcommand == "status" or subcommand == "runs":
             _handle_list_runs(respond, shared_app)
@@ -143,53 +163,40 @@ def register_unified_command_handler(shared_app):
     logger.info("✓ Unified /vineyard command handler registered")
 
 
-def _handle_new_prd(respond: Respond, command: dict, shared_app: App):
-    """Handle /vineyard new - open PRD submission modal."""
-    trigger_id = command.get("trigger_id")
-
-    if not trigger_id:
-        respond(text="❌ Unable to open modal. Please try again.")
-        return
-
-    try:
-        shared_app.client.views_open(
-            trigger_id=trigger_id,
-            view={
-                "type": "modal",
-                "callback_id": "prd_submission",
-                "title": {"type": "plain_text", "text": "New Product"},
-                "submit": {"type": "plain_text", "text": "Submit PRD"},
-                "blocks": [
-                    {
-                        "type": "input",
-                        "block_id": "product_name_block",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "product_name_input",
-                            "placeholder": {"type": "plain_text", "text": "e.g., InvoiceBot"},
-                        },
-                        "label": {"type": "plain_text", "text": "Product Name"},
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "prd_text_block",
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "prd_text_input",
-                            "multiline": True,
-                            "placeholder": {
-                                "type": "plain_text",
-                                "text": "Describe your product idea. Can be as brief as a sentence or as detailed as a full PRD.",
-                            },
-                        },
-                        "label": {"type": "plain_text", "text": "PRD / Product Description"},
-                    },
-                ],
+def _build_prd_modal() -> dict:
+    """Build the PRD submission modal view payload."""
+    return {
+        "type": "modal",
+        "callback_id": "prd_submission",
+        "title": {"type": "plain_text", "text": "New Product"},
+        "submit": {"type": "plain_text", "text": "Submit PRD"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "product_name_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "product_name_input",
+                    "placeholder": {"type": "plain_text", "text": "e.g., InvoiceBot"},
+                },
+                "label": {"type": "plain_text", "text": "Product Name"},
             },
-        )
-    except Exception as e:
-        logger.exception("Failed to open PRD modal")
-        respond(text=f"❌ Failed to open modal: {str(e)}")
+            {
+                "type": "input",
+                "block_id": "prd_text_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "prd_text_input",
+                    "multiline": True,
+                    "placeholder": {
+                        "type": "plain_text",
+                        "text": "Describe your product idea. Can be as brief as a sentence or as detailed as a full PRD.",
+                    },
+                },
+                "label": {"type": "plain_text", "text": "PRD / Product Description"},
+            },
+        ],
+    }
 
 
 def _handle_list_runs(respond: Respond, shared_app: App):
