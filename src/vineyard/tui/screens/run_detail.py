@@ -101,6 +101,25 @@ class RunDetailScreen(Screen):
             f"Cost so far: ${state.cost_usd:.4f} · Output: {state.output_dir}"
         )
 
+        if status == PhaseStatus.AWAITING_CLARIFICATION:
+            self._prompt_for_clarifications(phase)
+
+    def _prompt_for_clarifications(self, phase: Phase) -> None:
+        # If this run detail screen is on top, jump straight into the answer
+        # form so the user can't miss it. Otherwise floats a toast above
+        # whatever screen they're on.
+        from vineyard.tui.screens.phase_output import PhaseOutputScreen
+
+        if self.app.screen is self:
+            self.app.push_screen(PhaseOutputScreen(self.run_id, phase))
+            return
+        self.app.notify(
+            f"{phase.value} needs answers — open run {self.run_id[:8]}",
+            title="Vineyard · clarifications pending",
+            severity="warning",
+            timeout=10,
+        )
+
     def _on_event(self, kind: str, text: str) -> None:
         try:
             log = self.query_one("#event-log", RichLog)

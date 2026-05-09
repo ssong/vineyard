@@ -14,6 +14,7 @@ _STATUS_EMOJI = {
     PhaseStatus.PENDING.value: "⏳",
     PhaseStatus.IN_PROGRESS.value: "🔄",
     PhaseStatus.AWAITING_APPROVAL.value: "⏸",
+    PhaseStatus.AWAITING_CLARIFICATION.value: "❓",
     PhaseStatus.APPROVED.value: "✓",
     PhaseStatus.COMPLETED.value: "✅",
     PhaseStatus.FAILED.value: "❌",
