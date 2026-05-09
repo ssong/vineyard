@@ -13,6 +13,11 @@ _STATUS_LABEL = {
     PhaseStatus.PENDING: ("⏳", "pending", ""),
     PhaseStatus.IN_PROGRESS: ("🔄", "running", "running"),
     PhaseStatus.AWAITING_APPROVAL: ("⏸", "awaiting approval (press a)", "awaiting"),
+    PhaseStatus.AWAITING_CLARIFICATION: (
+        "❓",
+        "needs answers (open phase to fill in)",
+        "clarifying",
+    ),
     PhaseStatus.APPROVED: ("✓", "approved", ""),
     PhaseStatus.COMPLETED: ("✅", "completed", "completed"),
     PhaseStatus.FAILED: ("❌", "failed", "failed"),
@@ -45,7 +50,7 @@ class PhaseCard(Widget):
 
     def update_state(self, *, status: PhaseStatus) -> None:
         self.status = status
-        for cls in ("running", "completed", "failed", "awaiting"):
+        for cls in ("running", "completed", "failed", "awaiting", "clarifying"):
             self.remove_class(cls)
         cls = _STATUS_LABEL[status][2]
         if cls:

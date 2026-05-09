@@ -44,6 +44,7 @@ class DesignOutput(PhaseOutput):
     user_flows: list[UserFlow] = Field(default_factory=list)
     features: list[FeatureSpec]
     ui_copy: dict[str, str] = Field(default_factory=dict)
+    clarification_qa: list[ClarificationQA] = Field(default_factory=list)
 
 
 class APIEndpoint(BaseModel):
@@ -83,6 +84,7 @@ class SpecOutput(PhaseOutput):
     api_endpoints: list[APIEndpoint] = Field(default_factory=list)
     database_schema: list[DatabaseTable] = Field(default_factory=list)
     task_breakdown: list[EngineeringTask] = Field(default_factory=list)
+    clarification_qa: list[ClarificationQA] = Field(default_factory=list)
 
 
 class GeneratedFile(BaseModel):

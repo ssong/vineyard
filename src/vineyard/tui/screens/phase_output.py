@@ -15,9 +15,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import (
+    Button,
     DirectoryTree,
     Footer,
     Header,
+    Input,
     Markdown,
     Static,
 )
@@ -31,7 +33,7 @@ from vineyard.models import (
     QAOutput,
     SpecOutput,
 )
-from vineyard.orchestrator import approve_checkpoint
+from vineyard.orchestrator import approve_checkpoint, resume_run
 from vineyard.storage import RunStore
 
 _PHASE_MODEL: dict[Phase, type] = {
@@ -45,12 +47,14 @@ class PhaseOutputScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "approve", "Approve"),
+        Binding("s", "save_clarifications", "Save answers"),
     ]
 
     def __init__(self, run_id: str, phase: Phase) -> None:
         super().__init__()
         self.run_id = run_id
         self.phase = phase
+        self._unanswered_count = 0  # set in compose if applicable
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -70,7 +74,41 @@ class PhaseOutputScreen(Screen):
         else:
             yield Markdown(self._render_markdown(state), id="phase-md")
 
+        # If the agent left unanswered clarifications, render an answer form.
+        if status == PhaseStatus.AWAITING_CLARIFICATION.value:
+            yield from self._compose_clarifications(state)
+
         yield Footer()
+
+    def _compose_clarifications(self, state) -> ComposeResult:
+        unanswered = self._unanswered_for(state)
+        self._unanswered_count = len(unanswered)
+        if not unanswered:
+            return
+        with Vertical(id="clarifications"):
+            yield Static(
+                f"Answer the agent's {len(unanswered)} clarifying question(s), "
+                f"then press 's' or click Save to continue.",
+                classes="muted",
+            )
+            for i, qa in enumerate(unanswered):
+                yield Static(f"Q{i + 1}: {qa.question}", classes="clarification-question")
+                yield Input(placeholder="(your answer)", id=f"qa-{i}")
+            yield Button("Save & continue", id="qa-save", variant="primary")
+
+    def _unanswered_for(self, state) -> list:
+        raw = state.phase_outputs.get(self.phase.value)
+        if raw is None:
+            return []
+        model_cls = _PHASE_MODEL.get(self.phase)
+        if model_cls is None:
+            return []
+        output = raw if isinstance(raw, model_cls) else model_cls.model_validate(raw)
+        return [
+            qa
+            for qa in output.clarification_qa
+            if not qa.answer or qa.answer.strip() in ("", "(unanswered)")
+        ]
 
     def _title(self) -> str:
         return f"{self.phase.value.replace('_', ' ').upper()}  ·  press 'a' to approve · esc back"
@@ -147,6 +185,73 @@ class PhaseOutputScreen(Screen):
         self.notify(f"Approving {self.phase.value}…", timeout=3)
         await approve_checkpoint(state, self.phase, store=store)
         self.app.pop_screen()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "qa-save":
+            self.action_save_clarifications()
+
+    @work(exclusive=True, group="run")
+    async def action_save_clarifications(self) -> None:
+        if self._unanswered_count == 0:
+            return
+        store = RunStore()
+        state = store.load(self.run_id)
+        if state is None:
+            self.notify("Run not found.", severity="error")
+            return
+        if state.phase_statuses.get(self.phase.value) != PhaseStatus.AWAITING_CLARIFICATION.value:
+            self.notify(
+                f"{self.phase.value} has no clarifications to save.", severity="warning"
+            )
+            return
+
+        # Collect answers in order from the rendered Inputs.
+        answers: list[str] = []
+        for i in range(self._unanswered_count):
+            try:
+                inp = self.query_one(f"#qa-{i}", Input)
+                answers.append(inp.value.strip())
+            except Exception:
+                answers.append("")
+
+        if any(not a for a in answers):
+            self.notify("Please answer every question before saving.", severity="warning")
+            return
+
+        # Fold answers back into the phase output and persist.
+        model_cls = _PHASE_MODEL[self.phase]
+        raw = state.phase_outputs[self.phase.value]
+        output = raw if isinstance(raw, model_cls) else model_cls.model_validate(raw)
+        idx = 0
+        for qa in output.clarification_qa:
+            if (not qa.answer) or qa.answer.strip() in ("", "(unanswered)"):
+                if idx < len(answers):
+                    qa.answer = answers[idx]
+                idx += 1
+        state.phase_outputs[self.phase.value] = output.model_dump()
+        state.update_phase_status(self.phase, PhaseStatus.COMPLETED)
+        store.save(state)
+
+        self.notify("Answers saved — resuming run.", timeout=3)
+        self.app.pop_screen()
+
+        # Hand the resume back to the parent RunDetailScreen so its log/cards update.
+        self._resume_via_parent()
+
+    def _resume_via_parent(self) -> None:
+        # Lazy import to avoid circular dependency at module load.
+        from vineyard.tui.screens.run_detail import RunDetailScreen
+        for screen in self.app.screen_stack:
+            if isinstance(screen, RunDetailScreen) and screen.run_id == self.run_id:
+                screen.action_resume()
+                return
+        # Fallback: run resume in a detached worker without UI updates.
+        self.app.run_worker(
+            resume_run(self.run_id),
+            exclusive=True,
+            group="run",
+            description="resume after clarifications",
+        )
 
 
 # ---------------------------------------------------------------------------

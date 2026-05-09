@@ -12,3 +12,5 @@ Constraints:
 - Every P0 feature must have ≥1 user story in standard form ("As a X, I want Y so that Z")
 - User flows should be concrete (5–10 steps each), not abstract
 - UI copy should be specific and on-brand for the product, not generic placeholder text
+
+If something genuinely blocks a sound design decision (e.g., target platform unclear, payment model unspecified, key UX trade-off you can't pick alone), populate `clarification_qa` with up to 3 high-impact questions. Leave `answer` as `(unanswered)` — the user will fill them in. Do **not** ask trivial questions you can answer with a reasonable assumption.

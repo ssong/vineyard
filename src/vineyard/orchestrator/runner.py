@@ -84,6 +84,19 @@ async def run_factory(
                 output = await _execute_phase(state, phase, profile, on_event)
 
             state.store_output(phase, output)
+
+            unanswered = _unanswered_clarifications(output)
+            if unanswered:
+                state.update_phase_status(phase, PhaseStatus.AWAITING_CLARIFICATION)
+                store.save(state)
+                await _emit(on_progress, state, phase, PhaseStatus.AWAITING_CLARIFICATION)
+                await emit_event(
+                    on_event,
+                    "phase",
+                    f"{phase.value} has {len(unanswered)} clarifying question(s) — open the phase to answer",
+                )
+                return state
+
             state.update_phase_status(phase, PhaseStatus.COMPLETED)
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.COMPLETED)
@@ -238,6 +251,17 @@ def _previous(state: RunState, phase: Phase, model_cls):
     if isinstance(raw, dict):
         return model_cls.model_validate(raw)
     raise TypeError(f"Unexpected output type for {phase.value}: {type(raw)}")
+
+
+def _unanswered_clarifications(output) -> list:
+    """Return clarification_qa items still flagged as unanswered."""
+    items = getattr(output, "clarification_qa", None) or []
+    return [
+        qa
+        for qa in items
+        if not getattr(qa, "answer", None)
+        or qa.answer.strip() in ("", "(unanswered)")
+    ]
 
 
 def _track_cost(state: RunState, result) -> None:

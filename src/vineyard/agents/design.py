@@ -16,6 +16,18 @@ def design_agent(profile: StackProfile):
 
 
 def build_design_prompt(prd_analysis: PRDAnalysisOutput) -> str:
+    answered = [
+        qa
+        for qa in prd_analysis.clarification_qa
+        if qa.answer and qa.answer.strip() not in ("", "(unanswered)")
+    ]
+    answered_block = ""
+    if answered:
+        lines = ["\n\nUSER ANSWERS TO PRIOR CLARIFICATIONS:"]
+        for qa in answered:
+            lines.append(f"- Q: {qa.question}\n  A: {qa.answer}")
+        answered_block = "\n".join(lines)
+
     return (
         f"Turn this enriched PRD into a feature-level product design.\n\n"
         f"PRODUCT: {prd_analysis.product_name}\n\n"
@@ -23,4 +35,5 @@ def build_design_prompt(prd_analysis: PRDAnalysisOutput) -> str:
         f"CORE PROBLEM: {prd_analysis.core_problem}\n"
         f"TARGET USERS: {', '.join(prd_analysis.target_users)}\n"
         f"MVP SCOPE NOTES: {prd_analysis.mvp_scope_notes}"
+        f"{answered_block}"
     )

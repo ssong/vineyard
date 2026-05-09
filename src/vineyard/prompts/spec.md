@@ -12,3 +12,5 @@ Constraints:
 - Every database table must have at least an `id` and timestamps; foreign keys must declare `relationships`
 - Tasks should be sized so a competent engineer could complete each in 1–3 days
 - Story points: 1 = trivial, 2 = a day, 3 = 2–3 days, 5 = a week
+
+If something genuinely blocks a sound technical decision (e.g., realtime requirements unclear, multi-tenancy unspecified, expected scale unknown), populate `clarification_qa` with up to 3 high-impact questions. Leave `answer` as `(unanswered)` — the user will fill them in. Do **not** ask trivial questions you can answer with a reasonable assumption.

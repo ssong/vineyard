@@ -4,6 +4,7 @@ from vineyard.models.handoff import BuildPreferences, Handoff, PRDInput
 from vineyard.models.outputs import (
     APIEndpoint,
     BuildOutput,
+    ClarificationQA,
     DatabaseTable,
     DesignOutput,
     EngineeringTask,
@@ -20,6 +21,7 @@ __all__ = [
     "APIEndpoint",
     "BuildOutput",
     "BuildPreferences",
+    "ClarificationQA",
     "DatabaseTable",
     "DesignOutput",
     "EngineeringTask",

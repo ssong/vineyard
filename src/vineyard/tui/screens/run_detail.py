@@ -140,6 +140,12 @@ class RunDetailScreen(Screen):
         if status == PhaseStatus.AWAITING_APPROVAL:
             self.notify("Press 'a' to approve the pending checkpoint.", severity="warning")
             return
+        if status == PhaseStatus.AWAITING_CLARIFICATION:
+            self.notify(
+                "Phase has unanswered clarifying questions — press 'v' to open and answer them.",
+                severity="warning",
+            )
+            return
         self.notify(f"Resuming from {state.current_phase.value} ({status})…", timeout=3)
         self._on_event("phase", f"resume from {state.current_phase.value}")
         await resume_run(

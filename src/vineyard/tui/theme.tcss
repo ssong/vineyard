@@ -42,6 +42,11 @@ Footer {
     background: $warning 20%;
 }
 
+.phase-card.clarifying {
+    border: round $accent;
+    background: $accent 15%;
+}
+
 .section-title {
     color: $accent;
     text-style: bold;
@@ -114,4 +119,18 @@ ConfirmScreen {
 #build-file-path {
     margin-bottom: 1;
     color: $accent;
+}
+
+#clarifications {
+    margin: 1 2;
+    padding: 1 2;
+    border: round $accent;
+    background: $boost;
+    height: auto;
+    max-height: 24;
+}
+
+.clarification-question {
+    color: $accent;
+    text-style: bold;
 }

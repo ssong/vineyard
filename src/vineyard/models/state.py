@@ -21,6 +21,7 @@ class PhaseStatus(str, Enum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     AWAITING_APPROVAL = "awaiting_approval"
+    AWAITING_CLARIFICATION = "awaiting_clarification"
     APPROVED = "approved"
     COMPLETED = "completed"
     FAILED = "failed"
