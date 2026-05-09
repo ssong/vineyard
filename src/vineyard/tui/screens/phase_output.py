@@ -12,7 +12,7 @@ from pathlib import Path
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
@@ -47,7 +47,8 @@ class PhaseOutputScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "approve", "Approve"),
-        Binding("s", "save_clarifications", "Save answers"),
+        # priority=True so Ctrl+S fires even when an Input has focus.
+        Binding("ctrl+s", "save_clarifications", "Save answers", priority=True),
     ]
 
     def __init__(self, run_id: str, phase: Phase) -> None:
@@ -67,16 +68,20 @@ class PhaseOutputScreen(Screen):
             return
 
         status = state.phase_statuses.get(self.phase.value, PhaseStatus.PENDING.value)
-        yield Static(f"Status: {status}", classes="muted")
 
         if self.phase == Phase.BUILD:
+            # Build has its own horizontal-split layout that wants the full
+            # remaining height; don't wrap it in a scroll container.
+            yield Static(f"Status: {status}", classes="muted")
             yield from self._compose_build(state.output_dir / "build", state)
         else:
-            yield Markdown(self._render_markdown(state), id="phase-md")
-
-        # If the agent left unanswered clarifications, render an answer form.
-        if status == PhaseStatus.AWAITING_CLARIFICATION.value:
-            yield from self._compose_clarifications(state)
+            with VerticalScroll(id="phase-scroll"):
+                yield Static(f"Status: {status}", classes="muted")
+                # Surface the actionable form first when the phase is blocked
+                # on user input — markdown context follows below.
+                if status == PhaseStatus.AWAITING_CLARIFICATION.value:
+                    yield from self._compose_clarifications(state)
+                yield Markdown(self._render_markdown(state), id="phase-md")
 
         yield Footer()
 
@@ -88,7 +93,7 @@ class PhaseOutputScreen(Screen):
         with Vertical(id="clarifications"):
             yield Static(
                 f"Answer the agent's {len(unanswered)} clarifying question(s), "
-                f"then press 's' or click Save to continue.",
+                f"then press Ctrl+S or click Save & continue. Tab cycles fields.",
                 classes="muted",
             )
             for i, qa in enumerate(unanswered):

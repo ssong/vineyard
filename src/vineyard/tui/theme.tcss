@@ -121,16 +121,26 @@ ConfirmScreen {
     color: $accent;
 }
 
+#phase-scroll {
+    height: 1fr;
+    margin: 0 2;
+}
+
+#phase-md {
+    margin: 1 0;
+    height: auto;
+}
+
 #clarifications {
-    margin: 1 2;
+    margin: 1 0;
     padding: 1 2;
     border: round $accent;
     background: $boost;
     height: auto;
-    max-height: 24;
 }
 
 .clarification-question {
     color: $accent;
     text-style: bold;
+    margin-top: 1;
 }
