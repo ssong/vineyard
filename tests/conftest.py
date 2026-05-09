@@ -18,9 +18,15 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Re-bind the same instance everywhere modules captured it at import time.
     for mod_path in (
         "vineyard.storage.db",
-        "vineyard.storage.files",
         "vineyard.orchestrator.runner",
         "vineyard.cli",
+        "vineyard.llm.gateway",
+        "vineyard.llm.logfire",
+        "vineyard.validate.executor",
+        "vineyard.validate.e2b_exec",
+        "vineyard.build.executor",
+        "vineyard.build.pydantic_ai_exec",
+        "vineyard.build.managed_agents",
     ):
         try:
             mod = __import__(mod_path, fromlist=["settings"])

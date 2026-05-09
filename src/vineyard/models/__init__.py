@@ -5,6 +5,7 @@ from vineyard.models.outputs import (
     APIEndpoint,
     BuildOutput,
     ClarificationQA,
+    DatabaseColumn,
     DatabaseTable,
     DesignOutput,
     EngineeringTask,
@@ -14,6 +15,7 @@ from vineyard.models.outputs import (
     PRDAnalysisOutput,
     QAOutput,
     SpecOutput,
+    UserFlow,
     ValidationOutput,
     ValidationStep,
 )
@@ -24,6 +26,7 @@ __all__ = [
     "BuildOutput",
     "BuildPreferences",
     "ClarificationQA",
+    "DatabaseColumn",
     "DatabaseTable",
     "DesignOutput",
     "EngineeringTask",
@@ -38,6 +41,7 @@ __all__ = [
     "QAOutput",
     "RunState",
     "SpecOutput",
+    "UserFlow",
     "ValidationOutput",
     "ValidationStep",
 ]
