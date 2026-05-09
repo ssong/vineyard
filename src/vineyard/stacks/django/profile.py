@@ -4,7 +4,7 @@ _DIR = _stack_dir("django")
 
 DJANGO = StackProfile(
     name="django",
-    display_name="Django 5",
+    display_name="Django 5.2",
     description="Django + DRF + HTMX + PostgreSQL",
     container_image="python:3.12-bookworm",
     default_auth="credentials",

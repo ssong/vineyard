@@ -4,8 +4,8 @@ _DIR = _stack_dir("rails")
 
 RAILS = StackProfile(
     name="rails",
-    display_name="Ruby on Rails 7.1",
-    description="Rails + Hotwire + ViewComponent + PostgreSQL",
+    display_name="Ruby on Rails 8.0",
+    description="Rails 8 + Hotwire + Solid Queue + PostgreSQL",
     container_image="ruby:3.3-bookworm",
     default_auth="devise",
     default_payments="stripe",
