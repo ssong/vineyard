@@ -9,7 +9,7 @@ from textual.widgets import Footer, Header, Static
 
 from vineyard.models import Phase, PhaseStatus, RunState
 from vineyard.models.state import PHASE_ORDER
-from vineyard.orchestrator import approve_checkpoint, run_factory
+from vineyard.orchestrator import approve_checkpoint, resume_run, run_factory
 from vineyard.storage import RunStore
 from vineyard.tui.widgets.phase_card import PhaseCard
 
@@ -18,6 +18,7 @@ class RunDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
         Binding("a", "approve", "Approve checkpoint"),
+        Binding("r", "resume", "Resume / retry"),
         Binding("o", "open_output", "Open output dir"),
     ]
 
@@ -92,6 +93,24 @@ class RunDetailScreen(Screen):
             self.notify("No checkpoint awaiting approval.", severity="warning")
             return
         await approve_checkpoint(state, phase, store=store, on_progress=self._on_progress)
+        self._refresh()
+
+    @work(exclusive=True, group="run")
+    async def action_resume(self) -> None:
+        store = RunStore()
+        state = store.load(self.run_id)
+        if state is None:
+            self.notify("Run not found.", severity="error")
+            return
+        status = state.phase_statuses.get(state.current_phase.value)
+        if status == PhaseStatus.IN_PROGRESS:
+            self.notify("Run is already in progress.", severity="warning")
+            return
+        if status == PhaseStatus.AWAITING_APPROVAL:
+            self.notify("Press 'a' to approve the pending checkpoint.", severity="warning")
+            return
+        self.notify(f"Resuming from {state.current_phase.value} ({status})…", timeout=3)
+        await resume_run(self.run_id, store=store, on_progress=self._on_progress)
         self._refresh()
 
     def action_open_output(self) -> None:
