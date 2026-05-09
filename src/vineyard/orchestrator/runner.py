@@ -242,9 +242,10 @@ async def _execute_phase(
 
     if phase == Phase.SPEC:
         design: DesignOutput = _previous(state, Phase.DESIGN, DesignOutput)
+        prd_for_spec: PRDAnalysisOutput = _previous(state, Phase.PRD_ANALYSIS, PRDAnalysisOutput)
         agent = spec_agent(profile)
         await emit_event(on_event, "agent", "spec: calling claude-opus-4-7…")
-        result = await agent.run(build_spec_prompt(design))
+        result = await agent.run(build_spec_prompt(design, prd_for_spec))
         _track_cost(state, result, role="plan")
         await emit_event(
             on_event,
