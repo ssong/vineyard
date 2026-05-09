@@ -33,7 +33,7 @@ class PydanticAIExecutor:
                 raise ValueError(f"path escapes build directory: {path!r}")
             return target
 
-        def write_file(path: str, content: str, language: str = "text") -> str:
+        async def write_file(path: str, content: str, language: str = "text") -> str:
             """Write a source file inside the build directory.
 
             Args:
@@ -45,17 +45,20 @@ class PydanticAIExecutor:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
             files_written[path] = GeneratedFile(path=path, language=language)
+            await ctx.emit("tool", f"write_file {path} ({len(content)}B, {language})")
             return f"wrote {path} ({len(content)} bytes)"
 
-        def read_file(path: str) -> str:
+        async def read_file(path: str) -> str:
             """Read a file you previously wrote in this build."""
+            await ctx.emit("tool", f"read_file {path}")
             target = _safe_target(path)
             if not target.exists():
                 return f"<not found: {path}>"
             return target.read_text()
 
-        def list_files() -> list[str]:
+        async def list_files() -> list[str]:
             """List every file written in this build so far."""
+            await ctx.emit("tool", f"list_files ({len(files_written)} so far)")
             return sorted(files_written.keys())
 
         agent = Agent(

@@ -63,3 +63,11 @@ TextArea {
 Input {
     margin-bottom: 1;
 }
+
+#event-log {
+    height: 1fr;
+    min-height: 8;
+    border: round $accent;
+    margin: 1 2;
+    background: $boost;
+}

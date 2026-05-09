@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from vineyard.config import ExecutorName, settings
+from vineyard.events import EventCallback, emit_event
 from vineyard.models import BuildOutput, RunState, SpecOutput
 
 if TYPE_CHECKING:
@@ -20,11 +21,15 @@ class BuildContext:
     state: RunState
     profile: StackProfile
     spec: SpecOutput
+    on_event: EventCallback | None = None
 
     @property
     def build_dir(self) -> Path:
         """Where generated files should land. Created lazily by the executor."""
         return self.state.output_dir / "build"
+
+    async def emit(self, kind: str, text: str) -> None:
+        await emit_event(self.on_event, kind, text)
 
 
 class Executor(Protocol):

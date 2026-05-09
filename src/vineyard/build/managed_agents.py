@@ -20,6 +20,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ResultMessage,
     TextBlock,
+    ToolUseBlock,
     query,
 )
 
@@ -65,6 +66,9 @@ class ManagedAgentsExecutor:
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             narration.append(block.text)
+                            await ctx.emit("agent", _truncate(block.text))
+                        elif isinstance(block, ToolUseBlock):
+                            await ctx.emit("tool", _format_tool_use(block))
                 elif isinstance(msg, ResultMessage):
                     if msg.total_cost_usd:
                         cost = float(msg.total_cost_usd)
@@ -90,3 +94,20 @@ def _collect_files(build_dir: Path) -> list[GeneratedFile]:
         rel = p.relative_to(build_dir).as_posix()
         out.append(GeneratedFile(path=rel, language=_LANG_BY_EXT.get(p.suffix, "text")))
     return out
+
+
+def _truncate(text: str, limit: int = 200) -> str:
+    text = text.strip().replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _format_tool_use(block: ToolUseBlock) -> str:
+    name = block.name
+    args = block.input or {}
+    if name in ("Write", "Edit") and "file_path" in args:
+        return f"{name} {args['file_path']}"
+    if name == "Read" and "file_path" in args:
+        return f"Read {args['file_path']}"
+    if name in ("Glob", "Grep") and "pattern" in args:
+        return f"{name} {args['pattern']!r}"
+    return name

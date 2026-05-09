@@ -18,6 +18,7 @@ from vineyard.agents.qa import build_qa_prompt, qa_agent
 from vineyard.agents.spec import build_spec_prompt, spec_agent
 from vineyard.build.executor import BuildContext, get_executor
 from vineyard.config import settings
+from vineyard.events import EventCallback, emit_event
 from vineyard.models import (
     BuildOutput,
     DesignOutput,
@@ -58,6 +59,7 @@ async def run_factory(
     *,
     store: RunStore | None = None,
     on_progress: ProgressCallback | None = None,
+    on_event: EventCallback | None = None,
 ) -> RunState:
     store = store or RunStore()
     profile = registry.get(state.handoff.build_preferences.stack)
@@ -69,20 +71,25 @@ async def run_factory(
             state.update_phase_status(phase, PhaseStatus.AWAITING_APPROVAL)
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.AWAITING_APPROVAL)
+            await emit_event(on_event, "phase", f"{phase.value} awaiting approval (press 'a')")
             return state
 
         try:
             state.update_phase_status(phase, PhaseStatus.IN_PROGRESS)
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.IN_PROGRESS)
+            await emit_event(on_event, "phase", f"{phase.value} starting…")
 
             with logfire.span(f"phase.{phase.value}", run_id=state.run_id):
-                output = await _execute_phase(state, phase, profile)
+                output = await _execute_phase(state, phase, profile, on_event)
 
             state.store_output(phase, output)
             state.update_phase_status(phase, PhaseStatus.COMPLETED)
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.COMPLETED)
+            await emit_event(
+                on_event, "phase", f"{phase.value} completed · cost ${state.cost_usd:.4f}"
+            )
 
         except Exception as e:
             logger.exception("Phase %s failed", phase.value)
@@ -94,12 +101,14 @@ async def run_factory(
             })
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.FAILED)
+            await emit_event(on_event, "error", f"{phase.value} failed: {e}")
             return state
 
         next_phase = _next_phase(phase)
         if next_phase is None:
             state.completed_at = datetime.now(UTC)
             store.save(state)
+            await emit_event(on_event, "phase", "all phases complete")
             return state
 
         state.current_phase = next_phase
@@ -111,6 +120,7 @@ async def resume_run(
     *,
     store: RunStore | None = None,
     on_progress: ProgressCallback | None = None,
+    on_event: EventCallback | None = None,
 ) -> RunState | None:
     store = store or RunStore()
     state = store.load(run_id)
@@ -128,7 +138,7 @@ async def resume_run(
         state.current_phase = nxt
         store.save(state)
 
-    return await run_factory(state, store=store, on_progress=on_progress)
+    return await run_factory(state, store=store, on_progress=on_progress, on_event=on_event)
 
 
 async def approve_checkpoint(
@@ -137,6 +147,7 @@ async def approve_checkpoint(
     *,
     store: RunStore | None = None,
     on_progress: ProgressCallback | None = None,
+    on_event: EventCallback | None = None,
 ) -> RunState:
     store = store or RunStore()
     if state.phase_statuses.get(phase.value) != PhaseStatus.AWAITING_APPROVAL:
@@ -144,7 +155,7 @@ async def approve_checkpoint(
     state.clear_checkpoint(phase.value)
     state.update_phase_status(phase, PhaseStatus.APPROVED)
     store.save(state)
-    return await run_factory(state, store=store, on_progress=on_progress)
+    return await run_factory(state, store=store, on_progress=on_progress, on_event=on_event)
 
 
 # -----------------------------------------------------------------------------
@@ -152,38 +163,67 @@ async def approve_checkpoint(
 # -----------------------------------------------------------------------------
 
 
-async def _execute_phase(state: RunState, phase: Phase, profile) -> object:
+async def _execute_phase(
+    state: RunState,
+    phase: Phase,
+    profile,
+    on_event: EventCallback | None,
+) -> object:
     if phase == Phase.PRD_ANALYSIS:
         agent = prd_analysis_agent(profile)
         prompt = build_prd_analysis_prompt(state.handoff.prd_input)
+        await emit_event(on_event, "agent", "prd_analysis: calling claude-opus-4-7…")
         result = await agent.run(prompt)
         _track_cost(state, result)
+        await emit_event(on_event, "agent", "prd_analysis: done")
         return result.output
 
     if phase == Phase.DESIGN:
         prd: PRDAnalysisOutput = _previous(state, Phase.PRD_ANALYSIS, PRDAnalysisOutput)
         agent = design_agent(profile)
+        await emit_event(on_event, "agent", "design: calling claude-opus-4-7…")
         result = await agent.run(build_design_prompt(prd))
         _track_cost(state, result)
+        await emit_event(
+            on_event, "agent", f"design: done · {len(result.output.features)} features"
+        )
         return result.output
 
     if phase == Phase.SPEC:
         design: DesignOutput = _previous(state, Phase.DESIGN, DesignOutput)
         agent = spec_agent(profile)
+        await emit_event(on_event, "agent", "spec: calling claude-opus-4-7…")
         result = await agent.run(build_spec_prompt(design))
         _track_cost(state, result)
+        await emit_event(
+            on_event,
+            "agent",
+            f"spec: done · {len(result.output.api_endpoints)} endpoints, "
+            f"{len(result.output.task_breakdown)} tasks",
+        )
         return result.output
 
     if phase == Phase.BUILD:
         spec: SpecOutput = _previous(state, Phase.SPEC, SpecOutput)
         executor = get_executor(state.handoff.executor)
+        await emit_event(on_event, "agent", f"build: starting {state.handoff.executor} executor…")
         build_output: BuildOutput = await executor.run(
-            BuildContext(state=state, profile=profile, spec=spec)
+            BuildContext(state=state, profile=profile, spec=spec, on_event=on_event)
         )
         state.add_cost(build_output.cost_usd)
+        await emit_event(
+            on_event, "agent", f"build: wrote {len(build_output.files)} files"
+        )
+
         qa = qa_agent(profile)
+        await emit_event(on_event, "agent", "qa: validating against rubric…")
         qa_result = await qa.run(build_qa_prompt(spec, build_output))
         _track_cost(state, qa_result)
+        await emit_event(
+            on_event,
+            "agent",
+            f"qa: done · {len(qa_result.output.issues_found)} issues",
+        )
         return {"build": build_output, "qa": qa_result.output}
 
     raise ValueError(f"Unknown phase: {phase}")

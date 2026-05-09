@@ -1,17 +1,26 @@
 """Run detail screen — live phase progress, checkpoint approval, output access."""
 
+from datetime import datetime
+
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header, RichLog, Static
 
 from vineyard.models import Phase, PhaseStatus, RunState
 from vineyard.models.state import PHASE_ORDER
 from vineyard.orchestrator import approve_checkpoint, resume_run, run_factory
 from vineyard.storage import RunStore
 from vineyard.tui.widgets.phase_card import PhaseCard
+
+_KIND_STYLE = {
+    "phase": "bold cyan",
+    "agent": "magenta",
+    "tool": "green",
+    "error": "bold red",
+}
 
 
 class RunDetailScreen(Screen):
@@ -35,6 +44,7 @@ class RunDetailScreen(Screen):
             for phase in PHASE_ORDER:
                 yield PhaseCard(phase=phase, id=f"card-{phase.value}")
         yield Static("", id="footer-status", classes="muted")
+        yield RichLog(id="event-log", highlight=False, markup=True, wrap=True, max_lines=2000)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -71,7 +81,12 @@ class RunDetailScreen(Screen):
         state = store.load(self.run_id)
         if state is None:
             return
-        await run_factory(state, store=store, on_progress=self._on_progress)
+        await run_factory(
+            state,
+            store=store,
+            on_progress=self._on_progress,
+            on_event=self._on_event,
+        )
         self._refresh()
 
     async def _on_progress(self, state: RunState, phase: Phase, status: PhaseStatus) -> None:
@@ -81,6 +96,15 @@ class RunDetailScreen(Screen):
         self.query_one("#footer-status", Static).update(
             f"Cost so far: ${state.cost_usd:.4f} · Output: {state.output_dir}"
         )
+
+    def _on_event(self, kind: str, text: str) -> None:
+        try:
+            log = self.query_one("#event-log", RichLog)
+        except Exception:
+            return
+        ts = datetime.now().strftime("%H:%M:%S")
+        style = _KIND_STYLE.get(kind, "white")
+        log.write(f"[dim]{ts}[/] [{style}]{kind:>5}[/] {text}")
 
     @work(exclusive=True, group="run")
     async def action_approve(self) -> None:
@@ -92,7 +116,13 @@ class RunDetailScreen(Screen):
         if state.phase_statuses.get(phase.value) != PhaseStatus.AWAITING_APPROVAL:
             self.notify("No checkpoint awaiting approval.", severity="warning")
             return
-        await approve_checkpoint(state, phase, store=store, on_progress=self._on_progress)
+        await approve_checkpoint(
+            state,
+            phase,
+            store=store,
+            on_progress=self._on_progress,
+            on_event=self._on_event,
+        )
         self._refresh()
 
     @work(exclusive=True, group="run")
@@ -110,7 +140,13 @@ class RunDetailScreen(Screen):
             self.notify("Press 'a' to approve the pending checkpoint.", severity="warning")
             return
         self.notify(f"Resuming from {state.current_phase.value} ({status})…", timeout=3)
-        await resume_run(self.run_id, store=store, on_progress=self._on_progress)
+        self._on_event("phase", f"resume from {state.current_phase.value}")
+        await resume_run(
+            self.run_id,
+            store=store,
+            on_progress=self._on_progress,
+            on_event=self._on_event,
+        )
         self._refresh()
 
     def action_open_output(self) -> None:
