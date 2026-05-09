@@ -28,9 +28,9 @@ class PhaseCard(Widget):
 
     def compose(self) -> ComposeResult:
         with Horizontal():
-            yield Static(self._render(), id=f"label-{self.phase.value}")
+            yield Static(self._label_text(), id=f"label-{self.phase.value}")
 
-    def _render(self) -> str:
+    def _label_text(self) -> str:
         emoji, label, _ = _STATUS_LABEL[self.status]
         return f"{emoji}  {self.phase.value.replace('_', ' ').upper():18}  {label}"
 
@@ -42,6 +42,6 @@ class PhaseCard(Widget):
         if cls:
             self.add_class(cls)
         try:
-            self.query_one(f"#label-{self.phase.value}", Static).update(self._render())
+            self.query_one(f"#label-{self.phase.value}", Static).update(self._label_text())
         except Exception:
             pass
