@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     pydantic_ai_gateway_api_key: str = ""
     logfire_token: str = ""
+    logfire_read_token: str = ""
     anthropic_api_key: str = ""
 
     default_stack: StackName = "nextjs"

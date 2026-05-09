@@ -196,6 +196,108 @@ def delete(
 
 
 @app.command()
+def cost(
+    run_id: str = typer.Argument(..., help="Full run ID or unique short prefix."),
+) -> None:
+    """Fetch authoritative gateway cost from Logfire for a run.
+
+    Uses VINEYARD_LOGFIRE_READ_TOKEN — a separate read token created in your
+    Logfire project (Project → Read tokens), not the write token used for
+    sending traces.
+    """
+    if not settings.logfire_read_token:
+        console.print("[red]VINEYARD_LOGFIRE_READ_TOKEN not set.[/]")
+        console.print(
+            "Create a Logfire read token (Project → Read tokens) and run:\n"
+            "  vineyard config logfire-read-token pylf_v1_us_..."
+        )
+        raise typer.Exit(code=1)
+
+    store = RunStore()
+    matches = [r for r in store.list() if r["run_id"].startswith(run_id)]
+    if not matches:
+        console.print(f"[red]No run found:[/] {run_id}")
+        raise typer.Exit(code=1)
+    if len(matches) > 1:
+        console.print(f"[red]Ambiguous prefix[/] {run_id} matches {len(matches)} runs:")
+        for m in matches:
+            console.print(f"  {m['run_id'][:12]} · {m['product_name']}")
+        raise typer.Exit(code=1)
+    full_id = matches[0]["run_id"]
+
+    # Lazy import — keeps `vineyard --help` fast and avoids importing the query
+    # client into every CLI invocation.
+    from logfire.query_client import LogfireQueryClient, QueryExecutionError
+
+    sql = f"""
+        SELECT span_name, attributes, start_timestamp
+        FROM records
+        WHERE attributes->>'run_id' = '{full_id}'
+        ORDER BY start_timestamp
+    """
+
+    try:
+        with LogfireQueryClient(read_token=settings.logfire_read_token) as client:
+            result = client.query_json_rows(sql=sql)
+    except QueryExecutionError as exc:
+        console.print(f"[red]Logfire query failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    rows = result.get("rows") or []
+    if not rows:
+        console.print(
+            f"[yellow]No Logfire spans found for run {full_id[:8]}.[/]\n"
+            "Did the run execute with VINEYARD_LOGFIRE_TOKEN set?"
+        )
+        return
+
+    cost_keys = ("gen_ai.usage.cost", "gen_ai.usage.cost_usd", "cost", "cost_usd")
+    in_keys = ("gen_ai.usage.input_tokens", "input_tokens", "request_tokens")
+    out_keys = ("gen_ai.usage.output_tokens", "output_tokens", "response_tokens")
+
+    table = Table(title=f"Logfire spans for run {full_id[:8]}")
+    table.add_column("Span")
+    table.add_column("Cost", justify="right")
+    table.add_column("In", justify="right")
+    table.add_column("Out", justify="right")
+
+    total_cost = 0.0
+    found_any_cost = False
+    for row in rows:
+        attrs = row.get("attributes") or {}
+        cost_val = _first_attr(attrs, cost_keys)
+        if cost_val is not None:
+            found_any_cost = True
+            total_cost += float(cost_val)
+        in_val = _first_attr(attrs, in_keys) or 0
+        out_val = _first_attr(attrs, out_keys) or 0
+        table.add_row(
+            row.get("span_name", "?"),
+            f"${float(cost_val):.4f}" if cost_val is not None else "—",
+            str(int(in_val)) if in_val else "—",
+            str(int(out_val)) if out_val else "—",
+        )
+
+    console.print(table)
+
+    if found_any_cost:
+        console.print(f"\n[bold]Total cost (gateway-recorded):[/] ${total_cost:.4f}")
+    else:
+        console.print(
+            "\n[yellow]No cost attribute found on any span.[/] "
+            "The gateway may not have stamped one. Inspect the span attributes "
+            "in Logfire and tell me the attribute name to wire it in."
+        )
+
+
+def _first_attr(attrs: dict, keys: tuple[str, ...]):
+    for k in keys:
+        if k in attrs and attrs[k] is not None:
+            return attrs[k]
+    return None
+
+
+@app.command()
 def open_output(run_id: str) -> None:
     """Print the output dir for a run."""
     store = RunStore()
