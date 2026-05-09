@@ -84,3 +84,34 @@ Input {
 ConfirmScreen {
     align: center middle;
 }
+
+#phase-md {
+    margin: 1 2;
+}
+
+#build-summary {
+    margin: 1 2;
+    height: auto;
+    max-height: 12;
+}
+
+#build-layout {
+    height: 1fr;
+    margin: 1 2;
+}
+
+#build-tree {
+    width: 35%;
+    border: round $accent;
+}
+
+#build-pane {
+    width: 1fr;
+    border: round $accent;
+    padding: 0 1;
+}
+
+#build-file-path {
+    margin-bottom: 1;
+    color: $accent;
+}

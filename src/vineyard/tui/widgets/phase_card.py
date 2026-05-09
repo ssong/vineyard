@@ -2,6 +2,7 @@
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
@@ -22,9 +23,17 @@ class PhaseCard(Widget):
     DEFAULT_CLASSES = "phase-card"
     status: reactive[PhaseStatus] = reactive(PhaseStatus.PENDING)
 
+    class Selected(Message):
+        def __init__(self, phase: Phase) -> None:
+            self.phase = phase
+            super().__init__()
+
     def __init__(self, *, phase: Phase, **kwargs) -> None:
         super().__init__(**kwargs)
         self.phase = phase
+
+    def on_click(self) -> None:
+        self.post_message(self.Selected(self.phase))
 
     def compose(self) -> ComposeResult:
         with Horizontal():

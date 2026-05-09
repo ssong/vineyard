@@ -26,6 +26,7 @@ _KIND_STYLE = {
 class RunDetailScreen(Screen):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Back"),
+        Binding("v", "view", "View phase output"),
         Binding("a", "approve", "Approve checkpoint"),
         Binding("r", "resume", "Resume / retry"),
         Binding("o", "open_output", "Open output dir"),
@@ -154,3 +155,14 @@ class RunDetailScreen(Screen):
             return
         path = self._state.output_dir
         self.notify(f"Output dir: {path}", timeout=5)
+
+    def action_view(self) -> None:
+        state = self._state or RunStore().load(self.run_id)
+        if state is None:
+            return
+        from vineyard.tui.screens.phase_output import PhaseOutputScreen
+        self.app.push_screen(PhaseOutputScreen(self.run_id, state.current_phase))
+
+    def on_phase_card_selected(self, event: PhaseCard.Selected) -> None:
+        from vineyard.tui.screens.phase_output import PhaseOutputScreen
+        self.app.push_screen(PhaseOutputScreen(self.run_id, event.phase))
