@@ -23,6 +23,42 @@ _MODEL_BY_ROLE: dict[Role, str] = {
     "fast": "claude-haiku-4-5-20251001",
 }
 
+# Anthropic list pricing, USD per 1M tokens, as (input, output).
+# Cache write is 1.25× input; cache read is 0.10× input.
+_PRICING_PER_M: dict[str, tuple[float, float]] = {
+    "claude-opus-4-7": (15.0, 75.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5-20251001": (0.80, 4.0),
+}
+
+
+def cost_for_usage(
+    role: Role,
+    *,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float:
+    """Approximate USD cost for a single agent run, based on Anthropic list pricing.
+
+    The Pydantic AI gateway doesn't expose cost on its Usage object, so we
+    compute it ourselves. Cache writes are billed at 1.25× the base input rate,
+    cache reads at 0.10× — we apply both.
+    """
+    model = _MODEL_BY_ROLE.get(role)
+    pricing = _PRICING_PER_M.get(model) if model else None
+    if pricing is None:
+        return 0.0
+    in_per_m, out_per_m = pricing
+    cost = (
+        input_tokens * in_per_m
+        + cache_write_tokens * in_per_m * 1.25
+        + cache_read_tokens * in_per_m * 0.10
+        + output_tokens * out_per_m
+    ) / 1_000_000
+    return cost
+
 T = TypeVar("T", bound=BaseModel)
 
 

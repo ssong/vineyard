@@ -19,6 +19,7 @@ from vineyard.agents.spec import build_spec_prompt, spec_agent
 from vineyard.build.executor import BuildContext, get_executor
 from vineyard.config import settings
 from vineyard.events import EventCallback, emit_event
+from vineyard.llm.gateway import Role, cost_for_usage
 from vineyard.models import (
     BuildOutput,
     DesignOutput,
@@ -224,7 +225,7 @@ async def _execute_phase(
         prompt = build_prd_analysis_prompt(state.handoff.prd_input)
         await emit_event(on_event, "agent", "prd_analysis: calling claude-opus-4-7…")
         result = await agent.run(prompt)
-        _track_cost(state, result)
+        _track_cost(state, result, role="plan")
         await emit_event(on_event, "agent", "prd_analysis: done")
         return result.output
 
@@ -233,7 +234,7 @@ async def _execute_phase(
         agent = design_agent(profile)
         await emit_event(on_event, "agent", "design: calling claude-opus-4-7…")
         result = await agent.run(build_design_prompt(prd))
-        _track_cost(state, result)
+        _track_cost(state, result, role="plan")
         await emit_event(
             on_event, "agent", f"design: done · {len(result.output.features)} features"
         )
@@ -244,7 +245,7 @@ async def _execute_phase(
         agent = spec_agent(profile)
         await emit_event(on_event, "agent", "spec: calling claude-opus-4-7…")
         result = await agent.run(build_spec_prompt(design))
-        _track_cost(state, result)
+        _track_cost(state, result, role="plan")
         await emit_event(
             on_event,
             "agent",
@@ -277,7 +278,7 @@ async def _execute_phase(
         qa = qa_agent(profile)
         await emit_event(on_event, "agent", "qa: validating against rubric…")
         qa_result = await qa.run(build_qa_prompt(spec, build_output))
-        _track_cost(state, qa_result)
+        _track_cost(state, qa_result, role="judge")
         await emit_event(
             on_event,
             "agent",
@@ -310,13 +311,35 @@ def _unanswered_clarifications(output) -> list:
     ]
 
 
-def _track_cost(state: RunState, result) -> None:
-    usage = getattr(result, "usage", lambda: None)()
+def _track_cost(state: RunState, result, role: Role) -> None:
+    """Compute the run cost from a Pydantic AI agent result and add it to state.
+
+    Pydantic AI's RunUsage exposes token counts but no cost — we calculate from
+    Anthropic list pricing. Falls back to any explicit cost attr if a future
+    version starts surfacing one.
+    """
+    usage_fn = getattr(result, "usage", None)
+    if not callable(usage_fn):
+        return
+    usage = usage_fn()
     if usage is None:
         return
-    cost = getattr(usage, "total_cost", None) or getattr(usage, "request_cost", None)
+
+    # Prefer an explicit cost field if the SDK ever starts surfacing one.
+    explicit = getattr(usage, "total_cost", None) or getattr(usage, "request_cost", None)
+    if explicit:
+        state.add_cost(float(explicit))
+        return
+
+    cost = cost_for_usage(
+        role,
+        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cache_read_tokens=getattr(usage, "cache_read_tokens", 0) or 0,
+        cache_write_tokens=getattr(usage, "cache_write_tokens", 0) or 0,
+    )
     if cost:
-        state.add_cost(float(cost))
+        state.add_cost(cost)
 
 
 # -----------------------------------------------------------------------------

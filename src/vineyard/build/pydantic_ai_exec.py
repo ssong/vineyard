@@ -15,7 +15,7 @@ from pydantic_ai import Agent
 
 from vineyard.build.executor import BuildContext
 from vineyard.build.prompts import compose_system_prompt, compose_user_prompt
-from vineyard.llm.gateway import model_for
+from vineyard.llm.gateway import cost_for_usage, model_for
 from vineyard.models import BuildOutput, GeneratedFile
 
 
@@ -80,8 +80,20 @@ class PydanticAIExecutor:
         usage_fn = getattr(result, "usage", None)
         if callable(usage_fn):
             usage = usage_fn()
-            cost = getattr(usage, "total_cost", None) or getattr(usage, "request_cost", None)
-            if cost:
-                output.cost_usd = float(cost)
+            if usage is not None:
+                explicit = (
+                    getattr(usage, "total_cost", None)
+                    or getattr(usage, "request_cost", None)
+                )
+                if explicit:
+                    output.cost_usd = float(explicit)
+                else:
+                    output.cost_usd = cost_for_usage(
+                        "code",
+                        input_tokens=getattr(usage, "input_tokens", 0) or 0,
+                        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+                        cache_read_tokens=getattr(usage, "cache_read_tokens", 0) or 0,
+                        cache_write_tokens=getattr(usage, "cache_write_tokens", 0) or 0,
+                    )
 
         return output
