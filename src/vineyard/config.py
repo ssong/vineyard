@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATA_DIR = Path.home() / ".vineyard"
 
-StackName = Literal["rails", "nextjs", "fastapi", "django", "backend"]
+StackName = Literal["rails", "nextjs", "fastapi", "django", "backend", "cli", "tui"]
 ExecutorName = Literal["pydantic_ai", "managed_agents"]
 ValidateExecutorName = Literal["auto", "docker", "e2b", "none"]
 

@@ -31,6 +31,8 @@ stderr/stdout in the prompt so the agent can surgically fix it.
 | `fastapi` | FastAPI 0.115+ + SQLAlchemy 2 + Pydantic v2 + Alembic |
 | `django` | Django 5.2 + DRF + HTMX + psycopg 3 |
 | `backend` | Pure-API FastAPI + Terraform (AWS App Runner + RDS) |
+| `cli` | Python CLI app (Typer + Rich), packaged via uv |
+| `tui` | Python TUI app (Textual), packaged via uv |
 
 Each stack pins specific LTS / current versions in its system prompt so the
 agent doesn't drift to older defaults.
@@ -126,6 +128,7 @@ the generated code:
 | `django` | `uv sync && ruff check && manage.py check && pytest` |
 | `backend` | FastAPI commands + `terraform init -backend=false && terraform validate && terraform fmt -check` |
 | `rails` | `bundle install && zeitwerk:check && rspec` |
+| `cli` / `tui` | `uv sync && ruff check && pytest` |
 
 Backend selection (`VINEYARD_VALIDATE_EXECUTOR=auto` is the default):
 

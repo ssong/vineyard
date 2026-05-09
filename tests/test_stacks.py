@@ -4,7 +4,7 @@ import pytest
 
 from vineyard.stacks import registry
 
-EXPECTED = ["nextjs", "rails", "fastapi", "django", "backend"]
+EXPECTED = ["nextjs", "rails", "fastapi", "django", "backend", "cli", "tui"]
 
 
 @pytest.mark.parametrize("name", EXPECTED)

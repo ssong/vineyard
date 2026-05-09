@@ -1,0 +1,3 @@
+Frame the product as a **terminal UI application** built with Textual — single-user, local-first, runs in the terminal. Out of scope: web UI, mobile, server. In scope: screens, widgets, keybindings, terminal interaction patterns, optional local data store (SQLite), config via env/file.
+
+When identifying gaps, focus on: the screen graph (what screens exist, how the user navigates between them), keyboard-first workflow (what's a binding vs. what's clickable), modal vs. non-modal flows, persistent state, and whether the app needs to handle terminal resize / color schemes / mouse vs. keyboard-only.
