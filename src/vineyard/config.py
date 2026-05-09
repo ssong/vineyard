@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     default_stack: StackName = "nextjs"
     build_executor: ExecutorName = "pydantic_ai"
+    # Pydantic AI's Agent.run enforces a 50-call default; the build agent
+    # legitimately makes many tool turns (write_file/read_file per source
+    # file) so we raise it. Cost-bound this if you're worried about runaway
+    # spend — a phase failure is cleaner than a $$$ surprise.
+    build_request_limit: int = 500
 
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "INFO"

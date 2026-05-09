@@ -12,9 +12,11 @@ from pathlib import Path
 
 import logfire
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from vineyard.build.executor import BuildContext
 from vineyard.build.prompts import compose_system_prompt, compose_user_prompt
+from vineyard.config import settings
 from vineyard.llm.gateway import cost_for_usage, model_for
 from vineyard.models import BuildOutput, GeneratedFile
 
@@ -71,7 +73,10 @@ class PydanticAIExecutor:
         )
 
         with logfire.span("build.pydantic_ai", run_id=ctx.state.run_id):
-            result = await agent.run(compose_user_prompt(ctx))
+            result = await agent.run(
+                compose_user_prompt(ctx),
+                usage_limits=UsageLimits(request_limit=settings.build_request_limit),
+            )
 
         output: BuildOutput = result.output
         if files_written:
