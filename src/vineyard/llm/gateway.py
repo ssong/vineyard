@@ -31,7 +31,7 @@ def model_for(role: Role) -> AnthropicModel:
     if not settings.pydantic_ai_gateway_api_key:
         raise RuntimeError(
             "VINEYARD_PYDANTIC_AI_GATEWAY_API_KEY is not set. "
-            "Run `vineyard config set gateway-key pylf_…` or export the env var."
+            "Run `vineyard config pydantic-ai-gateway-api-key pylf_…` or export the env var."
         )
     provider = gateway_provider(
         "anthropic",

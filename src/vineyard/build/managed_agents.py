@@ -25,6 +25,7 @@ from claude_agent_sdk import (
 
 from vineyard.build.executor import BuildContext
 from vineyard.build.prompts import compose_system_prompt, compose_user_prompt
+from vineyard.config import settings
 from vineyard.models import BuildOutput, GeneratedFile
 
 _LANG_BY_EXT: dict[str, str] = {
@@ -40,11 +41,16 @@ class ManagedAgentsExecutor:
         build_dir = ctx.build_dir
         build_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
+        env: dict[str, str] = {}
+        if settings.anthropic_api_key:
+            env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+
         options = ClaudeAgentOptions(
             cwd=str(build_dir),
             system_prompt=compose_system_prompt(ctx),
             allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
             permission_mode="bypassPermissions",
+            env=env,
             # TODO(beta/Outcomes): wire `task_budget=` and `output_format=` once
             # the Managed Agents Outcomes API surface stabilizes — that's the
             # whole point of opting into this executor.
