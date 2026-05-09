@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterator
 
 from vineyard.config import settings
-from vineyard.models import Phase, PhaseStatus, RunState
+from vineyard.models import PhaseStatus, RunState
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (

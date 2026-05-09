@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 import logfire
 
@@ -25,7 +25,6 @@ from vineyard.models import (
     Phase,
     PhaseStatus,
     PRDAnalysisOutput,
-    QAOutput,
     RunState,
     SpecOutput,
 )
@@ -91,7 +90,7 @@ async def run_factory(
             state.errors.append({
                 "phase": phase.value,
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             })
             store.save(state)
             await _emit(on_progress, state, phase, PhaseStatus.FAILED)
@@ -99,7 +98,7 @@ async def run_factory(
 
         next_phase = _next_phase(phase)
         if next_phase is None:
-            state.completed_at = datetime.utcnow()
+            state.completed_at = datetime.now(UTC)
             store.save(state)
             return state
 

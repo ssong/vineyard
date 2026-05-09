@@ -1,0 +1,84 @@
+"""Default BUILD executor: a Pydantic AI Agent with file-system tools.
+
+Routes through the Pydantic AI Gateway like every other phase agent. The agent
+loops through tool calls (write/read/list files) until it returns a typed
+``BuildOutput``. We trust the recorded tool calls — not the model's self-report —
+for the final file list.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import logfire
+from pydantic_ai import Agent
+
+from vineyard.build.executor import BuildContext
+from vineyard.build.prompts import compose_system_prompt, compose_user_prompt
+from vineyard.llm.gateway import model_for
+from vineyard.models import BuildOutput, GeneratedFile
+
+
+class PydanticAIExecutor:
+    async def run(self, ctx: BuildContext) -> BuildOutput:
+        build_dir = ctx.build_dir
+        build_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        build_dir_resolved = build_dir.resolve()
+
+        files_written: dict[str, GeneratedFile] = {}
+
+        def _safe_target(path: str) -> Path:
+            target = (build_dir / path).resolve()
+            if not target.is_relative_to(build_dir_resolved):
+                raise ValueError(f"path escapes build directory: {path!r}")
+            return target
+
+        def write_file(path: str, content: str, language: str = "text") -> str:
+            """Write a source file inside the build directory.
+
+            Args:
+                path: Relative path under the build dir (e.g. ``src/app.tsx``).
+                content: Full file contents.
+                language: Language tag for downstream rendering (e.g. ``typescript``).
+            """
+            target = _safe_target(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+            files_written[path] = GeneratedFile(path=path, language=language)
+            return f"wrote {path} ({len(content)} bytes)"
+
+        def read_file(path: str) -> str:
+            """Read a file you previously wrote in this build."""
+            target = _safe_target(path)
+            if not target.exists():
+                return f"<not found: {path}>"
+            return target.read_text()
+
+        def list_files() -> list[str]:
+            """List every file written in this build so far."""
+            return sorted(files_written.keys())
+
+        agent = Agent(
+            model_for("code"),
+            output_type=BuildOutput,
+            system_prompt=compose_system_prompt(ctx),
+            name="build",
+            tools=[write_file, read_file, list_files],
+            retries=2,
+        )
+
+        with logfire.span("build.pydantic_ai", run_id=ctx.state.run_id):
+            result = await agent.run(compose_user_prompt(ctx))
+
+        output: BuildOutput = result.output
+        if files_written:
+            output.files = list(files_written.values())
+
+        usage_fn = getattr(result, "usage", None)
+        if callable(usage_fn):
+            usage = usage_fn()
+            cost = getattr(usage, "total_cost", None) or getattr(usage, "request_cost", None)
+            if cost:
+                output.cost_usd = float(cost)
+
+        return output

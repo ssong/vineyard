@@ -2,7 +2,7 @@
 
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -12,7 +12,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Select, Static
 
 from vineyard.config import StackName, settings
 from vineyard.models import Handoff, PRDInput
-from vineyard.orchestrator.runner import create_run, run_factory
+from vineyard.orchestrator.runner import create_run
 from vineyard.stacks import registry
 
 
@@ -40,7 +40,10 @@ class NewRunScreen(Screen):
 
             yield Label("Build executor")
             yield Switch(id="executor-toggle", value=settings.build_executor == "managed_agents")
-            yield Static("on = Managed Agents · off = local Claude Agent SDK", classes="muted")
+            yield Static(
+                "off = Pydantic AI (default) · on = Managed Agents w/ Outcomes (beta)",
+                classes="muted",
+            )
 
             yield Label("PRD")
             yield TextArea("", id="prd", language="markdown")
@@ -54,7 +57,11 @@ class NewRunScreen(Screen):
         name = (self.query_one("#name", Input).value or "").strip()
         prd_text = (self.query_one("#prd", TextArea).text or "").strip()
         stack: StackName = self.query_one("#stack", Select).value  # type: ignore[assignment]
-        executor = "managed_agents" if self.query_one("#executor-toggle", Switch).value else "local_sdk"
+        executor = (
+            "managed_agents"
+            if self.query_one("#executor-toggle", Switch).value
+            else "pydantic_ai"
+        )
 
         if not name or not prd_text:
             self.notify("Provide a product name and PRD before starting.", severity="warning")
@@ -64,7 +71,7 @@ class NewRunScreen(Screen):
         prefs = profile.default_preferences()
         handoff = Handoff(
             handoff_id=str(uuid.uuid4()),
-            triggered_at=datetime.utcnow(),
+            triggered_at=datetime.now(UTC),
             triggered_by="local",
             prd_input=PRDInput(name=name, slug=_slugify(name), prd_text=prd_text),
             build_preferences=prefs,

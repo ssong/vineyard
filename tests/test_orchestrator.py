@@ -7,7 +7,6 @@ from vineyard.models import (
     DesignOutput,
     FeatureSpec,
     Handoff,
-    Phase,
     PhaseStatus,
     PRDAnalysisOutput,
     PRDInput,

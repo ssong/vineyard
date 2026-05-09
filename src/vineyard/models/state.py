@@ -1,6 +1,6 @@
 """Run state machine."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -43,23 +43,23 @@ class RunState(BaseModel):
     logfire_trace_id: str | None = None
 
     errors: list[dict[str, Any]] = Field(default_factory=list)
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    last_updated_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    last_updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
 
     def update_phase_status(self, phase: Phase, status: PhaseStatus) -> None:
         self.phase_statuses[phase.value] = status
-        self.last_updated_at = datetime.utcnow()
+        self.last_updated_at = datetime.now(UTC)
 
     def store_output(self, phase: Phase, output: Any) -> None:
         self.phase_outputs[phase.value] = output
-        self.last_updated_at = datetime.utcnow()
+        self.last_updated_at = datetime.now(UTC)
 
     def clear_checkpoint(self, checkpoint: str) -> None:
         if checkpoint not in self.checkpoints_cleared:
             self.checkpoints_cleared.append(checkpoint)
-        self.last_updated_at = datetime.utcnow()
+        self.last_updated_at = datetime.now(UTC)
 
     def add_cost(self, usd: float) -> None:
         self.cost_usd += usd
-        self.last_updated_at = datetime.utcnow()
+        self.last_updated_at = datetime.now(UTC)

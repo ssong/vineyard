@@ -3,7 +3,7 @@
 import asyncio
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -43,7 +43,7 @@ def run(
     prd_text = prd_path.read_text()
     handoff = Handoff(
         handoff_id=str(uuid.uuid4()),
-        triggered_at=datetime.utcnow(),
+        triggered_at=datetime.now(UTC),
         triggered_by="cli",
         prd_input=PRDInput(name=name, slug=_slugify(name), prd_text=prd_text),
         build_preferences=profile.default_preferences(),

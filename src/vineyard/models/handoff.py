@@ -1,6 +1,6 @@
 """PRD input + build preferences + handoff payload."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -29,9 +29,9 @@ class BuildPreferences(BaseModel):
 
 class Handoff(BaseModel):
     handoff_id: str
-    triggered_at: datetime = Field(default_factory=datetime.utcnow)
+    triggered_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     triggered_by: str = "local"
     prd_input: PRDInput
     build_preferences: BuildPreferences
-    executor: ExecutorName = "managed_agents"
+    executor: ExecutorName = "pydantic_ai"
     approval_checkpoints: list[str] = Field(default_factory=lambda: ["design", "build"])
