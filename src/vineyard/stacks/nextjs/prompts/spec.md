@@ -1,0 +1,1 @@
+Express the API in terms of Next.js Server Actions and Route Handlers under `app/api/`. Database schema should be expressed in Drizzle terms (tables, relations, indexes). Auth flow should be designed around middleware + session cookies.

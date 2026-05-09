@@ -1,0 +1,1 @@
+Express the API as FastAPI routers under `app/api/v1/`. Define request/response Pydantic schemas separately from SQLAlchemy models. Database schema in SQLAlchemy declarative form with Alembic migrations.

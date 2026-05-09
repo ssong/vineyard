@@ -1,0 +1,1 @@
+Design pages and components in terms of the App Router: route segments, layouts, loading/error boundaries, parallel routes for modals, and intercepting routes when relevant. Tailwind utility classes for styling.

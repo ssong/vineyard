@@ -1,0 +1,65 @@
+Screen {
+    background: $surface;
+}
+
+Header {
+    background: $primary;
+    color: $text;
+}
+
+Footer {
+    background: $primary 50%;
+}
+
+#run-table {
+    height: 1fr;
+    border: round $accent;
+    margin: 1 2;
+}
+
+.phase-card {
+    border: round $accent;
+    height: auto;
+    padding: 1 2;
+    margin: 1 2;
+    background: $boost;
+}
+
+.phase-card.running {
+    border: round $warning;
+}
+
+.phase-card.completed {
+    border: round $success;
+}
+
+.phase-card.failed {
+    border: round $error;
+}
+
+.phase-card.awaiting {
+    border: round $warning;
+    background: $warning 20%;
+}
+
+.section-title {
+    color: $accent;
+    text-style: bold;
+    margin: 1 2 0 2;
+}
+
+.muted {
+    color: $text-muted;
+}
+
+#new-run-form > * {
+    margin: 0 2;
+}
+
+TextArea {
+    height: 12;
+}
+
+Input {
+    margin-bottom: 1;
+}

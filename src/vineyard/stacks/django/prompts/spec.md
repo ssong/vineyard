@@ -1,0 +1,1 @@
+Split work across Django apps under `apps/`. Express APIs as DRF ViewSets with explicit serializers. HTML pages via class-based views or HTMX-driven function views. Database schema in Django model form.
