@@ -46,7 +46,7 @@ def build_agent(
     output_type: type[T],
     system_prompt: str,
     name: str,
-    retries: int = 2,
+    retries: int = 4,
 ) -> Agent[None, T]:
     """Build a Pydantic AI agent with typed output, retries, and gateway routing."""
     return Agent(

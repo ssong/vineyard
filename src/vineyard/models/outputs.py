@@ -16,12 +16,12 @@ class ClarificationQA(BaseModel):
 
 class PRDAnalysisOutput(PhaseOutput):
     product_name: str
-    product_summary: str
-    enriched_prd_markdown: str
+    product_summary: str = ""
+    enriched_prd_markdown: str = ""
     identified_gaps: list[str] = Field(default_factory=list)
     clarification_qa: list[ClarificationQA] = Field(default_factory=list)
     target_users: list[str] = Field(default_factory=list)
-    core_problem: str
+    core_problem: str = ""
     mvp_scope_notes: str = ""
 
 
