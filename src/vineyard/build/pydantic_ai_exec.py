@@ -27,7 +27,15 @@ class PydanticAIExecutor:
         build_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         build_dir_resolved = build_dir.resolve()
 
+        # On a fix-mode retry, seed with the prior attempt's file list so the
+        # final BuildOutput.files reflects the union (previously written +
+        # whatever the agent overwrites this round). Without this, files the
+        # agent doesn't touch on this attempt would silently disappear from
+        # the recorded list even though they're still on disk.
         files_written: dict[str, GeneratedFile] = {}
+        if ctx.prior_build is not None:
+            for f in ctx.prior_build.files:
+                files_written[f.path] = f
 
         def _safe_target(path: str) -> Path:
             target = (build_dir / path).resolve()

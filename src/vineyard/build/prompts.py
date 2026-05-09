@@ -98,7 +98,63 @@ def compose_user_prompt(ctx: BuildContext) -> str:
     if spec.technical_spec_markdown:
         sections.append(f"TECHNICAL SPEC:\n{spec.technical_spec_markdown}")
 
+    # ---- Fix mode (only set on retries after validation failed) ----
+    fix_block = _fix_mode_section(ctx)
+    if fix_block:
+        sections.append(fix_block)
+
     return "\n\n".join(sections)
+
+
+def _fix_mode_section(ctx: BuildContext) -> str | None:
+    """Compose a FIX MODE block describing the prior build + validation failure.
+
+    Placed at the end of the prompt so it dominates recent-context attention
+    and so the unchanging upstream sections above stay cacheable across retries.
+    """
+    if ctx.validation_errors is None or ctx.prior_build is None:
+        return None
+
+    prior_files = "\n".join(
+        f"- {f.path} ({f.language})" for f in ctx.prior_build.files
+    ) or "(no files recorded)"
+
+    err = ctx.validation_errors
+    failed_step = None
+    if err.failed_step_index is not None and 0 <= err.failed_step_index < len(err.steps):
+        failed_step = err.steps[err.failed_step_index]
+
+    lines = [
+        f"## FIX MODE — Attempt {ctx.attempt}",
+        "",
+        "Your previous build attempt produced these files (they're already on "
+        "disk — `read_file` to inspect, `write_file` to overwrite):",
+        prior_files,
+    ]
+
+    if failed_step is not None:
+        lines += [
+            "",
+            f"Validation failed at step {err.failed_step_index + 1} of "
+            f"{len(err.steps)}: `{failed_step.command}`",
+            f"Exit code: {failed_step.exit_code}  ·  "
+            f"Duration: {failed_step.duration_seconds:.2f}s",
+        ]
+        if failed_step.stderr_tail.strip():
+            lines += ["", "stderr (tail):", "```", failed_step.stderr_tail.strip(), "```"]
+        if failed_step.stdout_tail.strip():
+            lines += ["", "stdout (tail):", "```", failed_step.stdout_tail.strip(), "```"]
+    else:
+        lines += ["", f"Validation failure summary: {err.summary or '(no detail)'}"]
+
+    lines += [
+        "",
+        "**Surgical edits only.** Use `read_file` to inspect the specific files "
+        "the errors point to, then `write_file` to overwrite just those files "
+        "with corrected content. Do not rewrite files that aren't broken. "
+        "Don't introduce new files unless the error literally requires one.",
+    ]
+    return "\n".join(lines)
 
 
 def _gather_answered(ctx: BuildContext) -> list[tuple[str, list]]:

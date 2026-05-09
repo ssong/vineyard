@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # file) so we raise it. Cost-bound this if you're worried about runaway
     # spend — a phase failure is cleaner than a $$$ surprise.
     build_request_limit: int = 500
+    # Maximum number of build retries triggered by a failing VALIDATE phase.
+    # `1` would mean: 1 initial build + 1 fix attempt = 2 builds total.
+    # Default 3 → 4 builds total. Set to 0 to disable the loop.
+    validate_max_retries: int = 3
+    # Hard ceiling on total run cost in USD (approximate, computed from
+    # tokens). The validate-phase loop checks this before each retry and
+    # bails if the cost would exceed it. None disables the cap.
+    run_cost_cap_usd: float | None = None
 
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "INFO"

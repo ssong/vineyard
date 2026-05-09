@@ -14,6 +14,7 @@ from vineyard.models import (
     PRDAnalysisOutput,
     RunState,
     SpecOutput,
+    ValidationOutput,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +29,11 @@ class BuildContext:
     spec so the build agent has the same product context the design and spec
     agents had — features, user stories, user flows, and any clarifications
     the user answered along the way.
+
+    On a retry triggered by a failed VALIDATE phase, ``prior_build`` and
+    ``validation_errors`` carry forward so the agent can read the existing
+    files and surgically fix the offending lines instead of rewriting from
+    scratch. ``attempt == 1`` is the first build; 2+ are fix attempts.
     """
 
     state: RunState
@@ -36,6 +42,9 @@ class BuildContext:
     prd: PRDAnalysisOutput | None = None
     design: DesignOutput | None = None
     on_event: EventCallback | None = None
+    prior_build: BuildOutput | None = None
+    validation_errors: ValidationOutput | None = None
+    attempt: int = 1
 
     @property
     def build_dir(self) -> Path:

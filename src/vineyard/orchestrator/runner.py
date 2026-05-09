@@ -258,45 +258,110 @@ async def _execute_phase(
         return result.output
 
     if phase == Phase.BUILD:
+        # First-pass build: no QA yet. QA + the validate-driven retry loop
+        # both live in the VALIDATE phase below, so the build phase output
+        # is just the BuildOutput. _render_build_summary already tolerates
+        # both the {build, qa} dict shape (final) and a bare BuildOutput.
         spec: SpecOutput = _previous(state, Phase.SPEC, SpecOutput)
         prd_out: PRDAnalysisOutput = _previous(state, Phase.PRD_ANALYSIS, PRDAnalysisOutput)
         design_out: DesignOutput = _previous(state, Phase.DESIGN, DesignOutput)
-        executor = get_executor(state.handoff.executor)
-        await emit_event(on_event, "agent", f"build: starting {state.handoff.executor} executor…")
-        build_output: BuildOutput = await executor.run(
-            BuildContext(
-                state=state,
-                profile=profile,
-                spec=spec,
-                prd=prd_out,
-                design=design_out,
-                on_event=on_event,
-            )
+        build_output = await _run_build(
+            state, profile, spec, prd_out, design_out, on_event,
+            attempt=1,
+            prior_build=None,
+            validation_errors=None,
         )
-        state.add_cost(build_output.cost_usd)
-        await emit_event(
-            on_event, "agent", f"build: wrote {len(build_output.files)} files"
+        return build_output
+
+    if phase == Phase.VALIDATE:
+        return await _run_validate_loop(
+            state=state,
+            profile=profile,
+            on_event=on_event,
         )
 
-        qa = qa_agent(profile)
-        await emit_event(on_event, "agent", "qa: validating against rubric…")
-        qa_result = await qa.run(build_qa_prompt(spec, build_output))
-        _track_cost(state, qa_result, role="judge")
+    raise ValueError(f"Unknown phase: {phase}")
+
+
+async def _run_build(
+    state: RunState,
+    profile,
+    spec: SpecOutput,
+    prd_out: PRDAnalysisOutput,
+    design_out: DesignOutput,
+    on_event: EventCallback | None,
+    *,
+    attempt: int,
+    prior_build: BuildOutput | None,
+    validation_errors: ValidationOutput | None,
+) -> BuildOutput:
+    executor = get_executor(state.handoff.executor)
+    label = (
+        f"build: starting {state.handoff.executor} executor…"
+        if attempt == 1
+        else f"build (fix attempt {attempt}): re-running {state.handoff.executor} executor…"
+    )
+    await emit_event(on_event, "agent", label)
+    build_output: BuildOutput = await executor.run(
+        BuildContext(
+            state=state,
+            profile=profile,
+            spec=spec,
+            prd=prd_out,
+            design=design_out,
+            on_event=on_event,
+            prior_build=prior_build,
+            validation_errors=validation_errors,
+            attempt=attempt,
+        )
+    )
+    state.add_cost(build_output.cost_usd)
+    await emit_event(
+        on_event, "agent", f"build: wrote {len(build_output.files)} files"
+    )
+    return build_output
+
+
+async def _run_validate_loop(
+    *,
+    state: RunState,
+    profile,
+    on_event: EventCallback | None,
+) -> dict:
+    """Validate the generated codebase, looping back into BUILD on failure.
+
+    Up to ``settings.validate_max_retries + 1`` total validate attempts. Between
+    failures, BUILD re-runs in fix mode with the prior file list and the
+    failing step's stderr/stdout in its prompt. On the first successful
+    validation, QA runs once against the final build output and the result is
+    bundled into the phase output.
+
+    Raises RuntimeError when retries are exhausted (recoverable via resume).
+    """
+    spec: SpecOutput = _previous(state, Phase.SPEC, SpecOutput)
+    prd_out: PRDAnalysisOutput = _previous(state, Phase.PRD_ANALYSIS, PRDAnalysisOutput)
+    design_out: DesignOutput = _previous(state, Phase.DESIGN, DesignOutput)
+
+    last_build = _load_build_output(state)
+    if last_build is None:
+        raise RuntimeError("BUILD phase has no output — cannot validate")
+    max_retries = max(0, int(settings.validate_max_retries))
+    cost_cap = settings.run_cost_cap_usd
+
+    last_validation: ValidationOutput | None = None
+
+    for attempt in range(1, max_retries + 2):  # 1..N+1 inclusive
+        validator = get_validator()
         await emit_event(
             on_event,
             "agent",
-            f"qa: done · {len(qa_result.output.issues_found)} issues",
-        )
-        return {"build": build_output, "qa": qa_result.output}
-
-    if phase == Phase.VALIDATE:
-        validator = get_validator()
-        await emit_event(
-            on_event, "agent", f"validate: starting via {type(validator).__name__}"
+            f"validate (attempt {attempt}/{max_retries + 1}): starting via "
+            f"{type(validator).__name__}",
         )
         result: ValidationOutput = await validator.run(
             ValidatorContext(state=state, profile=profile, on_event=on_event)
         )
+        last_validation = result
         passed = sum(1 for s in result.steps if s.exit_code == 0)
         total = len(result.steps)
         await emit_event(
@@ -304,12 +369,80 @@ async def _execute_phase(
             "agent",
             f"validate: {result.summary} ({passed}/{total} steps passed)",
         )
-        if not result.success:
-            # Surface the error so the phase fails (recoverable via resume).
-            raise RuntimeError(result.summary)
-        return result
 
-    raise ValueError(f"Unknown phase: {phase}")
+        if result.success:
+            # Final successful build — run QA once, bundle and return.
+            qa = qa_agent(profile)
+            await emit_event(on_event, "agent", "qa: validating against rubric…")
+            qa_result = await qa.run(build_qa_prompt(spec, last_build))
+            _track_cost(state, qa_result, role="judge")
+            await emit_event(
+                on_event,
+                "agent",
+                f"qa: done · {len(qa_result.output.issues_found)} issues",
+            )
+            # Update BUILD phase output with the final build + qa, so the
+            # build card reflects the QA result the user inspects in the UI.
+            state.store_output(
+                Phase.BUILD,
+                {"build": last_build, "qa": qa_result.output},
+            )
+            return result
+
+        # Failure path — out of retries?
+        if attempt > max_retries:
+            raise RuntimeError(
+                f"Validation failed after {attempt} build attempt(s): {result.summary}"
+            )
+
+        # Cost cap check — bail before paying for another build.
+        if cost_cap is not None and state.cost_usd >= cost_cap:
+            raise RuntimeError(
+                f"Run cost cap (${cost_cap:.2f}) reached at ${state.cost_usd:.4f}; "
+                f"refusing further build retries. Last validate failure: {result.summary}"
+            )
+
+        await emit_event(
+            on_event,
+            "phase",
+            f"validation failed; retrying build (fix attempt {attempt + 1}/"
+            f"{max_retries + 1}) with errors as context",
+        )
+
+        last_build = await _run_build(
+            state, profile, spec, prd_out, design_out, on_event,
+            attempt=attempt + 1,
+            prior_build=last_build,
+            validation_errors=result,
+        )
+        # Persist the latest build so the phase card and UI reflect it even
+        # mid-loop. Phase status stays COMPLETED (we don't re-flip it).
+        state.store_output(Phase.BUILD, last_build)
+
+    # Unreachable; the loop either returns success or raises.
+    raise RuntimeError("validate loop exited without returning")  # pragma: no cover
+
+
+def _load_build_output(state: RunState) -> BuildOutput | None:
+    """Return the most recent BuildOutput regardless of phase-output shape.
+
+    The BUILD phase output is a bare BuildOutput mid-retry-loop and a
+    ``{"build": BuildOutput, "qa": QAOutput}`` dict after validation
+    succeeds. After a JSON roundtrip both shapes come back as dicts, so we
+    sniff and unwrap.
+    """
+    raw = state.phase_outputs.get(Phase.BUILD.value)
+    if raw is None:
+        return None
+    if isinstance(raw, BuildOutput):
+        return raw
+    if isinstance(raw, dict):
+        candidate = raw.get("build", raw)
+        if isinstance(candidate, BuildOutput):
+            return candidate
+        if isinstance(candidate, dict):
+            return BuildOutput.model_validate(candidate)
+    return None
 
 
 def _previous(state: RunState, phase: Phase, model_cls):
