@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING, Protocol
 
 from vineyard.config import ExecutorName, settings
 from vineyard.events import EventCallback, emit_event
-from vineyard.models import BuildOutput, RunState, SpecOutput
+from vineyard.models import (
+    BuildOutput,
+    DesignOutput,
+    PRDAnalysisOutput,
+    RunState,
+    SpecOutput,
+)
 
 if TYPE_CHECKING:
     from vineyard.stacks.base import StackProfile
@@ -16,11 +22,19 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class BuildContext:
-    """Everything a BUILD executor needs to generate a codebase."""
+    """Everything a BUILD executor needs to generate a codebase.
+
+    The upstream phase outputs (``prd``, ``design``) are passed alongside the
+    spec so the build agent has the same product context the design and spec
+    agents had — features, user stories, user flows, and any clarifications
+    the user answered along the way.
+    """
 
     state: RunState
     profile: StackProfile
     spec: SpecOutput
+    prd: PRDAnalysisOutput | None = None
+    design: DesignOutput | None = None
     on_event: EventCallback | None = None
 
     @property

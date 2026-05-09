@@ -1,4 +1,11 @@
-"""Prompt composition shared by both BUILD executors."""
+"""Prompt composition shared by both BUILD executors.
+
+The user prompt assembles every upstream artifact so the build agent has the
+same product context the design and spec agents had — original PRD, enriched
+PRD, full feature breakdowns, user flows, and any clarifications the user
+answered along the way. Without these, a thin spec leaves the build agent
+guessing.
+"""
 
 from __future__ import annotations
 
@@ -21,23 +28,95 @@ def compose_system_prompt(ctx: BuildContext) -> str:
 def compose_user_prompt(ctx: BuildContext) -> str:
     spec = ctx.spec
     prefs = ctx.state.handoff.build_preferences
-    prd = ctx.state.handoff.prd_input
+    prd_input = ctx.state.handoff.prd_input
 
-    endpoints = "\n".join(
-        f"- {e.method} {e.path} — {e.description}" for e in spec.api_endpoints
-    ) or "(none)"
-    tables = "\n".join(
-        f"- {t.name}: {t.description}" for t in spec.database_schema
-    ) or "(none)"
-    tasks = "\n".join(
-        f"- [{t.story_points}pt] {t.title}" for t in spec.task_breakdown
-    ) or "(none)"
+    sections: list[str] = [
+        f"Build the codebase for **{prd_input.name}** on the {ctx.profile.display_name} stack.",
+        f"BUILD PREFERENCES: auth={prefs.auth} · payments={prefs.payments} · db={prefs.db}",
+    ]
 
-    return (
-        f"Build the codebase for **{prd.name}** on the {ctx.profile.display_name} stack.\n\n"
-        f"BUILD PREFERENCES: auth={prefs.auth} · payments={prefs.payments} · db={prefs.db}\n\n"
-        f"API ENDPOINTS:\n{endpoints}\n\n"
-        f"DATABASE TABLES:\n{tables}\n\n"
-        f"ENGINEERING TASKS:\n{tasks}\n\n"
-        f"TECHNICAL SPEC:\n{spec.technical_spec_markdown}"
+    # ---- Product context (PRD) ----
+    if ctx.prd is not None:
+        if ctx.prd.product_summary:
+            sections.append(f"PRODUCT SUMMARY:\n{ctx.prd.product_summary}")
+        if ctx.prd.core_problem:
+            sections.append(f"CORE PROBLEM:\n{ctx.prd.core_problem}")
+        if ctx.prd.target_users:
+            users = ", ".join(ctx.prd.target_users)
+            sections.append(f"TARGET USERS: {users}")
+        if ctx.prd.enriched_prd_markdown:
+            sections.append(f"ENRICHED PRD:\n{ctx.prd.enriched_prd_markdown}")
+
+    # ---- Design context (features + flows) ----
+    if ctx.design is not None and ctx.design.features:
+        feature_blocks: list[str] = []
+        for f in ctx.design.features:
+            block = [f"### [{f.priority}] {f.name}", f.description]
+            if f.user_stories:
+                block.append("**User stories:**")
+                block.extend(f"- {s}" for s in f.user_stories)
+            if f.acceptance_criteria:
+                block.append("**Acceptance criteria:**")
+                block.extend(f"- {c}" for c in f.acceptance_criteria)
+            if f.technical_notes:
+                block.append(f"_Notes:_ {f.technical_notes}")
+            feature_blocks.append("\n".join(block))
+        sections.append("FEATURES:\n" + "\n\n".join(feature_blocks))
+
+    if ctx.design is not None and ctx.design.user_flows:
+        flow_blocks: list[str] = []
+        for flow in ctx.design.user_flows:
+            steps = "\n".join(f"  {i + 1}. {step}" for i, step in enumerate(flow.steps))
+            flow_blocks.append(f"- **{flow.name}:**\n{steps}")
+        sections.append("USER FLOWS:\n" + "\n".join(flow_blocks))
+
+    # ---- Answered clarifications from every upstream phase ----
+    answered = _gather_answered(ctx)
+    if answered:
+        ans_lines: list[str] = []
+        for phase_name, qas in answered:
+            ans_lines.append(f"From {phase_name}:")
+            for qa in qas:
+                ans_lines.append(f"- Q: {qa.question}\n  A: {qa.answer}")
+        sections.append("USER ANSWERS TO PRIOR CLARIFICATIONS:\n" + "\n".join(ans_lines))
+
+    # ---- Spec details ----
+    endpoints = (
+        "\n".join(f"- {e.method} {e.path} — {e.description}" for e in spec.api_endpoints)
+        or "(none)"
     )
+    tables = (
+        "\n".join(f"- {t.name}: {t.description}" for t in spec.database_schema) or "(none)"
+    )
+    tasks = (
+        "\n".join(f"- [{t.story_points}pt] {t.title}" for t in spec.task_breakdown)
+        or "(none)"
+    )
+    sections.append(f"API ENDPOINTS:\n{endpoints}")
+    sections.append(f"DATABASE TABLES:\n{tables}")
+    sections.append(f"ENGINEERING TASKS:\n{tasks}")
+    if spec.technical_spec_markdown:
+        sections.append(f"TECHNICAL SPEC:\n{spec.technical_spec_markdown}")
+
+    return "\n\n".join(sections)
+
+
+def _gather_answered(ctx: BuildContext) -> list[tuple[str, list]]:
+    """Collect every clarification_qa with a real answer from upstream phases."""
+    out: list[tuple[str, list]] = []
+    for phase_name, src in [
+        ("prd_analysis", ctx.prd),
+        ("design", ctx.design),
+        ("spec", ctx.spec),
+    ]:
+        if src is None:
+            continue
+        items = getattr(src, "clarification_qa", None) or []
+        answered = [
+            qa
+            for qa in items
+            if qa.answer and qa.answer.strip() not in ("", "(unanswered)")
+        ]
+        if answered:
+            out.append((phase_name, answered))
+    return out

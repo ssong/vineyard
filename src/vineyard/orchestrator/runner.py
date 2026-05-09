@@ -255,10 +255,19 @@ async def _execute_phase(
 
     if phase == Phase.BUILD:
         spec: SpecOutput = _previous(state, Phase.SPEC, SpecOutput)
+        prd_out: PRDAnalysisOutput = _previous(state, Phase.PRD_ANALYSIS, PRDAnalysisOutput)
+        design_out: DesignOutput = _previous(state, Phase.DESIGN, DesignOutput)
         executor = get_executor(state.handoff.executor)
         await emit_event(on_event, "agent", f"build: starting {state.handoff.executor} executor…")
         build_output: BuildOutput = await executor.run(
-            BuildContext(state=state, profile=profile, spec=spec, on_event=on_event)
+            BuildContext(
+                state=state,
+                profile=profile,
+                spec=spec,
+                prd=prd_out,
+                design=design_out,
+                on_event=on_event,
+            )
         )
         state.add_cost(build_output.cost_usd)
         await emit_event(
