@@ -21,6 +21,10 @@ class StackProfile:
     system_prompt_path: Path
     prompt_dir: Path
     file_extensions: tuple[str, ...] = field(default_factory=tuple)
+    # Shell commands the VALIDATE phase runs against the generated codebase.
+    # Each one runs sequentially in the same sandbox session; first non-zero
+    # exit code stops the chain.
+    validate_commands: tuple[str, ...] = field(default_factory=tuple)
 
     def rubric(self) -> str:
         return self.rubric_path.read_text()

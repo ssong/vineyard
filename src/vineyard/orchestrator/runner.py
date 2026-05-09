@@ -29,10 +29,12 @@ from vineyard.models import (
     PRDAnalysisOutput,
     RunState,
     SpecOutput,
+    ValidationOutput,
 )
 from vineyard.models.state import PHASE_ORDER
 from vineyard.stacks import registry
 from vineyard.storage.db import RunStore
+from vineyard.validate import ValidatorContext, get_validator
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +288,26 @@ async def _execute_phase(
             f"qa: done · {len(qa_result.output.issues_found)} issues",
         )
         return {"build": build_output, "qa": qa_result.output}
+
+    if phase == Phase.VALIDATE:
+        validator = get_validator()
+        await emit_event(
+            on_event, "agent", f"validate: starting via {type(validator).__name__}"
+        )
+        result: ValidationOutput = await validator.run(
+            ValidatorContext(state=state, profile=profile, on_event=on_event)
+        )
+        passed = sum(1 for s in result.steps if s.exit_code == 0)
+        total = len(result.steps)
+        await emit_event(
+            on_event,
+            "agent",
+            f"validate: {result.summary} ({passed}/{total} steps passed)",
+        )
+        if not result.success:
+            # Surface the error so the phase fails (recoverable via resume).
+            raise RuntimeError(result.summary)
+        return result
 
     raise ValueError(f"Unknown phase: {phase}")
 

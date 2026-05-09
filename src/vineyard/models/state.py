@@ -15,6 +15,7 @@ class Phase(str, Enum):
     DESIGN = "design"
     SPEC = "spec"
     BUILD = "build"
+    VALIDATE = "validate"
 
 
 class PhaseStatus(str, Enum):
@@ -27,7 +28,13 @@ class PhaseStatus(str, Enum):
     FAILED = "failed"
 
 
-PHASE_ORDER: list[Phase] = [Phase.PRD_ANALYSIS, Phase.DESIGN, Phase.SPEC, Phase.BUILD]
+PHASE_ORDER: list[Phase] = [
+    Phase.PRD_ANALYSIS,
+    Phase.DESIGN,
+    Phase.SPEC,
+    Phase.BUILD,
+    Phase.VALIDATE,
+]
 
 
 class RunState(BaseModel):

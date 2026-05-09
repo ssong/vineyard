@@ -14,4 +14,11 @@ DJANGO = StackProfile(
     system_prompt_path=_DIR / "system_prompt.md",
     prompt_dir=_DIR / "prompts",
     file_extensions=(".py", ".html", ".toml"),
+    validate_commands=(
+        "pip install -q uv",
+        "uv sync --frozen || uv sync",
+        "uv run ruff check .",
+        "uv run python manage.py check",
+        "uv run pytest -q",
+    ),
 )

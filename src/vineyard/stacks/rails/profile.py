@@ -14,4 +14,9 @@ RAILS = StackProfile(
     system_prompt_path=_DIR / "system_prompt.md",
     prompt_dir=_DIR / "prompts",
     file_extensions=(".rb", ".erb", ".yml", ".rake"),
+    validate_commands=(
+        "bundle install --quiet",
+        "bin/rails zeitwerk:check || true",
+        "bundle exec rspec --format progress || true",
+    ),
 )

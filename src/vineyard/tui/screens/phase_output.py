@@ -32,6 +32,7 @@ from vineyard.models import (
     PRDAnalysisOutput,
     QAOutput,
     SpecOutput,
+    ValidationOutput,
 )
 from vineyard.orchestrator import approve_checkpoint, resume_run
 from vineyard.storage import RunStore
@@ -40,6 +41,7 @@ _PHASE_MODEL: dict[Phase, type] = {
     Phase.PRD_ANALYSIS: PRDAnalysisOutput,
     Phase.DESIGN: DesignOutput,
     Phase.SPEC: SpecOutput,
+    Phase.VALIDATE: ValidationOutput,
 }
 
 
@@ -137,6 +139,8 @@ class PhaseOutputScreen(Screen):
             return _render_design(output)
         if isinstance(output, SpecOutput):
             return _render_spec(output)
+        if isinstance(output, ValidationOutput):
+            return _render_validation(output)
         return "# (no renderer for this phase)"
 
     # ---- build phase -------------------------------------------------------
@@ -342,6 +346,38 @@ def _render_spec(o: SpecOutput) -> str:
             if t.dependencies:
                 parts += ["**Dependencies:** " + ", ".join(t.dependencies)]
             parts += [""]
+    return "\n".join(parts)
+
+
+def _render_validation(o: ValidationOutput) -> str:
+    icon = "✅" if o.success else "❌"
+    parts = [
+        f"# Validation {icon}",
+        "",
+        f"**Backend:** `{o.backend}`",
+        f"**Result:** {o.summary or ('passed' if o.success else 'failed')}",
+        "",
+    ]
+    if not o.steps:
+        parts.append("_No steps recorded._")
+        return "\n".join(parts)
+
+    parts.append("## Steps")
+    for i, step in enumerate(o.steps):
+        step_icon = "✓" if step.exit_code == 0 else "✗"
+        is_failed = o.failed_step_index == i
+        header = f"### {step_icon} `{step.command}`"
+        if is_failed:
+            header += "  ← failed here"
+        parts += [
+            "",
+            header,
+            f"_exit {step.exit_code} · {step.duration_seconds:.2f}s_",
+        ]
+        if step.stdout_tail.strip():
+            parts += ["", "**stdout (tail):**", "```", step.stdout_tail.strip(), "```"]
+        if step.stderr_tail.strip():
+            parts += ["", "**stderr (tail):**", "```", step.stderr_tail.strip(), "```"]
     return "\n".join(parts)
 
 

@@ -14,4 +14,10 @@ FASTAPI = StackProfile(
     system_prompt_path=_DIR / "system_prompt.md",
     prompt_dir=_DIR / "prompts",
     file_extensions=(".py", ".sql", ".toml", ".yaml"),
+    validate_commands=(
+        "pip install -q uv",
+        "uv sync --frozen || uv sync",
+        "uv run ruff check .",
+        "uv run pytest -q",
+    ),
 )

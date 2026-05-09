@@ -14,4 +14,10 @@ NEXTJS = StackProfile(
     system_prompt_path=_DIR / "system_prompt.md",
     prompt_dir=_DIR / "prompts",
     file_extensions=(".ts", ".tsx", ".js", ".jsx", ".css", ".json"),
+    validate_commands=(
+        "corepack enable && pnpm install --frozen-lockfile",
+        "pnpm exec tsc --noEmit",
+        "pnpm test --run --passWithNoTests",
+        "pnpm build",
+    ),
 )

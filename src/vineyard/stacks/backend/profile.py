@@ -14,4 +14,14 @@ BACKEND = StackProfile(
     system_prompt_path=_DIR / "system_prompt.md",
     prompt_dir=_DIR / "prompts",
     file_extensions=(".py", ".tf", ".tfvars", ".sql", ".toml", ".yaml", ".yml"),
+    validate_commands=(
+        "pip install -q uv",
+        "uv sync --frozen || uv sync",
+        "uv run ruff check .",
+        "uv run pytest -q",
+        # Terraform: validate-only (no AWS creds in the sandbox).
+        "cd infra && terraform init -backend=false -input=false",
+        "cd infra && terraform validate",
+        "cd infra && terraform fmt -check -recursive",
+    ),
 )

@@ -106,3 +106,19 @@ class QAOutput(PhaseOutput):
     issues_fixed: list[str] = Field(default_factory=list)
     issues_unfixable: list[str] = Field(default_factory=list)
     summary: str = ""
+
+
+class ValidationStep(BaseModel):
+    command: str
+    exit_code: int = 0
+    duration_seconds: float = 0.0
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+
+
+class ValidationOutput(PhaseOutput):
+    backend: Literal["docker", "e2b", "skipped"] = "skipped"
+    success: bool = False
+    steps: list[ValidationStep] = Field(default_factory=list)
+    failed_step_index: int | None = None
+    summary: str = ""

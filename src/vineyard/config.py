@@ -9,6 +9,7 @@ DEFAULT_DATA_DIR = Path.home() / ".vineyard"
 
 StackName = Literal["rails", "nextjs", "fastapi", "django", "backend"]
 ExecutorName = Literal["pydantic_ai", "managed_agents"]
+ValidateExecutorName = Literal["auto", "docker", "e2b", "none"]
 
 
 class Settings(BaseSettings):
@@ -23,9 +24,13 @@ class Settings(BaseSettings):
     logfire_token: str = ""
     logfire_read_token: str = ""
     anthropic_api_key: str = ""
+    e2b_api_key: str = ""
 
     default_stack: StackName = "nextjs"
     build_executor: ExecutorName = "pydantic_ai"
+    # Validation backend selection: 'auto' picks E2B if VINEYARD_E2B_API_KEY
+    # is set, else Docker if the CLI is available, else skips with a notice.
+    validate_executor: ValidateExecutorName = "auto"
     # Pydantic AI's Agent.run enforces a 50-call default; the build agent
     # legitimately makes many tool turns (write_file/read_file per source
     # file) so we raise it. Cost-bound this if you're worried about runaway

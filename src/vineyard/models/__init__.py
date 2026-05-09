@@ -14,6 +14,8 @@ from vineyard.models.outputs import (
     PRDAnalysisOutput,
     QAOutput,
     SpecOutput,
+    ValidationOutput,
+    ValidationStep,
 )
 from vineyard.models.state import Phase, PhaseStatus, RunState
 
@@ -36,4 +38,6 @@ __all__ = [
     "QAOutput",
     "RunState",
     "SpecOutput",
+    "ValidationOutput",
+    "ValidationStep",
 ]

@@ -23,6 +23,11 @@ dependencies = [
 [project.scripts]
 vineyard = "vineyard.cli:main"
 
+[project.optional-dependencies]
+# Cloud sandbox for the VALIDATE phase. Install with `uv sync --extra e2b`
+# (or set VINEYARD_E2B_API_KEY and `uv pip install e2b-code-interpreter`).
+e2b = ["e2b-code-interpreter>=1.0"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
