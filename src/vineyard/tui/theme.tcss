@@ -17,11 +17,18 @@ Footer {
     margin: 1 2;
 }
 
+#phases {
+    height: 1fr;
+    min-height: 6;
+    margin: 0;
+    padding: 0;
+}
+
 .phase-card {
     border: round $accent;
-    height: auto;
-    padding: 1 2;
-    margin: 1 2;
+    height: 3;
+    padding: 0 2;
+    margin: 0 2;
     background: $boost;
 }
 
@@ -71,10 +78,16 @@ Input {
 
 #event-log {
     height: 1fr;
-    min-height: 8;
+    min-height: 6;
+    max-height: 16;
     border: round $accent;
     margin: 1 2;
     background: $boost;
+}
+
+#footer-status {
+    height: 1;
+    margin: 0 2;
 }
 
 #confirm-dialog {

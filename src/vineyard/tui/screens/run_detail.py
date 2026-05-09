@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
@@ -44,7 +44,7 @@ class RunDetailScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(self._title(), id="title", classes="section-title")
-        with Vertical(id="phases"):
+        with VerticalScroll(id="phases"):
             for phase in PHASE_ORDER:
                 yield PhaseCard(phase=phase, id=f"card-{phase.value}")
         yield Static("", id="footer-status", classes="muted")
