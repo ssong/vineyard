@@ -348,8 +348,6 @@ async def _run_validate_loop(
     max_retries = max(0, int(settings.validate_max_retries))
     cost_cap = settings.run_cost_cap_usd
 
-    last_validation: ValidationOutput | None = None
-
     for attempt in range(1, max_retries + 2):  # 1..N+1 inclusive
         validator = get_validator()
         await emit_event(
@@ -361,7 +359,6 @@ async def _run_validate_loop(
         result: ValidationOutput = await validator.run(
             ValidatorContext(state=state, profile=profile, on_event=on_event)
         )
-        last_validation = result
         passed = sum(1 for s in result.steps if s.exit_code == 0)
         total = len(result.steps)
         await emit_event(

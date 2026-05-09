@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 

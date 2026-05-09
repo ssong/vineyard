@@ -14,8 +14,8 @@ Selection happens in :func:`get_validator`:
 """
 
 from vineyard.validate.executor import (
-    ValidatorContext,
     Validator,
+    ValidatorContext,
     get_validator,
 )
 
