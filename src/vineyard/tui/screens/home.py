@@ -8,6 +8,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from vineyard.models import PhaseStatus
 from vineyard.storage import RunStore
+from vineyard.tui.screens.confirm import ConfirmScreen
 
 _STATUS_EMOJI = {
     PhaseStatus.PENDING.value: "⏳",
@@ -20,12 +21,15 @@ _STATUS_EMOJI = {
 
 
 class HomeScreen(Screen):
-    BINDINGS = [Binding("r", "refresh", "Refresh")]
+    BINDINGS = [
+        Binding("r", "refresh", "Refresh"),
+        Binding("d", "delete", "Delete"),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static(
-            "Runs (n: new · enter or click to open · r: refresh)",
+            "Runs (n: new · enter to open · d: delete · r: refresh)",
             classes="section-title",
         )
         yield Container(DataTable(id="run-table"))
@@ -67,3 +71,31 @@ class HomeScreen(Screen):
             return
         from vineyard.tui.screens.run_detail import RunDetailScreen
         self.app.push_screen(RunDetailScreen(run_id))
+
+    def action_delete(self) -> None:
+        table: DataTable = self.query_one("#run-table", DataTable)
+        if table.row_count == 0:
+            return
+        try:
+            cell_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+        except Exception:
+            return
+        run_id = getattr(cell_key.row_key, "value", None)
+        if not run_id:
+            return
+
+        store = RunStore()
+        rows = [r for r in store.list() if r["run_id"] == run_id]
+        product = rows[0]["product_name"] if rows else "(unknown)"
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            store.delete(run_id)
+            self.notify(f"Deleted {run_id[:8]} ({product})", timeout=4)
+            self.action_refresh()
+
+        self.app.push_screen(
+            ConfirmScreen(f"Delete run {run_id[:8]} ({product})?"),
+            _on_confirm,
+        )

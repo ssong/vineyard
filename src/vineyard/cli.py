@@ -136,6 +136,34 @@ def config(
 
 
 @app.command()
+def delete(
+    run_id: str = typer.Argument(..., help="Full run ID or unique short prefix."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+) -> None:
+    """Delete a run (DB row + on-disk output)."""
+    store = RunStore()
+    matches = [r for r in store.list() if r["run_id"].startswith(run_id)]
+    if not matches:
+        console.print(f"[red]No run found:[/] {run_id}")
+        raise typer.Exit(code=1)
+    if len(matches) > 1:
+        console.print(f"[red]Ambiguous prefix[/] {run_id} matches {len(matches)} runs:")
+        for m in matches:
+            console.print(f"  {m['run_id'][:12]} · {m['product_name']}")
+        raise typer.Exit(code=1)
+    target = matches[0]
+    full_id = target["run_id"]
+    if not yes:
+        typer.confirm(
+            f"Delete run {full_id[:8]} ({target['product_name']})? "
+            f"This removes the SQLite row and the output directory.",
+            abort=True,
+        )
+    store.delete(full_id)
+    console.print(f"[green]Deleted[/] {full_id[:8]} ({target['product_name']})")
+
+
+@app.command()
 def open_output(run_id: str) -> None:
     """Print the output dir for a run."""
     store = RunStore()

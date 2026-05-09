@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -99,9 +100,19 @@ class RunStore:
         with self._connect() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
-    def delete(self, run_id: str) -> None:
+    def delete(self, run_id: str, *, remove_files: bool = True) -> bool:
+        """Delete a run from the DB and (by default) its on-disk directory.
+
+        Returns True if a row was actually removed.
+        """
         with self._connect() as conn:
-            conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+            cur = conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+            removed = cur.rowcount > 0
+        if remove_files:
+            run_dir = settings.runs_dir() / run_id
+            if run_dir.exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+        return removed
 
     def failed_runs(self) -> list[dict]:
         return self.list(status_filter=PhaseStatus.FAILED.value)
