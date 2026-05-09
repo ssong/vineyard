@@ -13,7 +13,7 @@ from rich.table import Table
 from vineyard.config import ExecutorName, StackName, settings
 from vineyard.llm.logfire import configure_logfire
 from vineyard.models import Handoff, PRDInput
-from vineyard.orchestrator import create_run, resume_run, run_factory
+from vineyard.orchestrator import create_run, restart_run, resume_run, run_factory
 from vineyard.stacks import registry
 from vineyard.storage import RunStore
 
@@ -88,6 +88,38 @@ def resume(run_id: str) -> None:
     state = asyncio.run(resume_run(run_id))
     if state is None:
         console.print(f"[red]No run found:[/] {run_id}")
+        raise typer.Exit(code=1)
+    console.print(f"[bold]Phase:[/] {state.current_phase.value} · cost ${state.cost_usd:.4f}")
+
+
+@app.command()
+def restart(
+    run_id: str = typer.Argument(..., help="Full run ID or unique short prefix."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
+) -> None:
+    """Wipe a run's phase outputs and re-run it from the first phase."""
+    configure_logfire()
+    store = RunStore()
+    matches = [r for r in store.list() if r["run_id"].startswith(run_id)]
+    if not matches:
+        console.print(f"[red]No run found:[/] {run_id}")
+        raise typer.Exit(code=1)
+    if len(matches) > 1:
+        console.print(f"[red]Ambiguous prefix[/] {run_id} matches {len(matches)} runs:")
+        for m in matches:
+            console.print(f"  {m['run_id'][:12]} · {m['product_name']}")
+        raise typer.Exit(code=1)
+    target = matches[0]
+    full_id = target["run_id"]
+    if not yes:
+        typer.confirm(
+            f"Restart run {full_id[:8]} ({target['product_name']})? "
+            f"This wipes all phase outputs and the build directory.",
+            abort=True,
+        )
+    state = asyncio.run(restart_run(full_id, store=store))
+    if state is None:
+        console.print(f"[red]No run found:[/] {full_id}")
         raise typer.Exit(code=1)
     console.print(f"[bold]Phase:[/] {state.current_phase.value} · cost ${state.cost_usd:.4f}")
 

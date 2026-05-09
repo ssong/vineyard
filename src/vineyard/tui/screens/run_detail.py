@@ -1,6 +1,6 @@
 """Run detail screen — live phase progress, checkpoint approval, output access."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from textual import work
 from textual.app import ComposeResult
@@ -11,8 +11,9 @@ from textual.widgets import Footer, Header, RichLog, Static
 
 from vineyard.models import Phase, PhaseStatus, RunState
 from vineyard.models.state import PHASE_ORDER
-from vineyard.orchestrator import approve_checkpoint, resume_run, run_factory
+from vineyard.orchestrator import approve_checkpoint, restart_run, resume_run, run_factory
 from vineyard.storage import RunStore
+from vineyard.tui.screens.confirm import ConfirmScreen
 from vineyard.tui.widgets.phase_card import PhaseCard
 
 _KIND_STYLE = {
@@ -29,6 +30,8 @@ class RunDetailScreen(Screen):
         Binding("v", "view", "View phase output"),
         Binding("a", "approve", "Approve checkpoint"),
         Binding("r", "resume", "Resume / retry"),
+        Binding("x", "stop", "Stop"),
+        Binding("R", "restart", "Restart"),
         Binding("o", "open_output", "Open output dir"),
     ]
 
@@ -172,3 +175,75 @@ class RunDetailScreen(Screen):
     def on_phase_card_selected(self, event: PhaseCard.Selected) -> None:
         from vineyard.tui.screens.phase_output import PhaseOutputScreen
         self.app.push_screen(PhaseOutputScreen(self.run_id, event.phase))
+
+    def action_stop(self) -> None:
+        store = RunStore()
+        state = store.load(self.run_id)
+        if state is None:
+            return
+        status = state.phase_statuses.get(state.current_phase.value)
+        if status != PhaseStatus.IN_PROGRESS.value:
+            self.notify("Nothing to stop — no phase is running.", severity="warning")
+            return
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            self._do_stop()
+
+        self.app.push_screen(
+            ConfirmScreen(f"Stop {state.current_phase.value}? You can resume later."),
+            _on_confirm,
+        )
+
+    def _do_stop(self) -> None:
+        # Cancel any running 'run' workers on this screen.
+        for worker in list(self.workers):
+            if worker.group == "run":
+                worker.cancel()
+
+        store = RunStore()
+        state = store.load(self.run_id)
+        if state is None:
+            return
+        if state.phase_statuses.get(state.current_phase.value) == PhaseStatus.IN_PROGRESS.value:
+            state.update_phase_status(state.current_phase, PhaseStatus.FAILED)
+            state.errors.append({
+                "phase": state.current_phase.value,
+                "error": "Stopped by user",
+                "timestamp": datetime.now(UTC).isoformat(),
+            })
+            store.save(state)
+        self._on_event("error", f"{state.current_phase.value} stopped by user")
+        self.notify("Run stopped. Press 'r' to resume from this phase.", timeout=4)
+        self._refresh()
+
+    def action_restart(self) -> None:
+        store = RunStore()
+        state = store.load(self.run_id)
+        if state is None:
+            return
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            self._do_restart()
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Restart from prd_analysis? This wipes phase outputs and "
+                f"the build dir for {self.run_id[:8]}."
+            ),
+            _on_confirm,
+        )
+
+    @work(exclusive=True, group="run")
+    async def _do_restart(self) -> None:
+        # `exclusive=True` cancels any prior 'run' worker before this one starts.
+        self._on_event("phase", "restart requested by user")
+        await restart_run(
+            self.run_id,
+            on_progress=self._on_progress,
+            on_event=self._on_event,
+        )
+        self._refresh()

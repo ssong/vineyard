@@ -154,6 +154,43 @@ async def resume_run(
     return await run_factory(state, store=store, on_progress=on_progress, on_event=on_event)
 
 
+async def restart_run(
+    run_id: str,
+    *,
+    store: RunStore | None = None,
+    on_progress: ProgressCallback | None = None,
+    on_event: EventCallback | None = None,
+) -> RunState | None:
+    """Wipe a run's phase outputs and re-run from the first phase.
+
+    Keeps the same run_id, handoff, and output_dir on disk. Output directory
+    contents are emptied so the build phase doesn't see stale generated files.
+    """
+    import shutil
+
+    store = store or RunStore()
+    state = store.load(run_id)
+    if state is None:
+        return None
+
+    state.phase_outputs.clear()
+    state.phase_statuses = {p.value: PhaseStatus.PENDING for p in PHASE_ORDER}
+    state.checkpoints_cleared.clear()
+    state.errors.clear()
+    state.cost_usd = 0.0
+    state.current_phase = PHASE_ORDER[0]
+    state.completed_at = None
+    state.started_at = datetime.now(UTC)
+    store.save(state)
+
+    if state.output_dir.exists():
+        shutil.rmtree(state.output_dir, ignore_errors=True)
+    state.output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    await emit_event(on_event, "phase", "restart: state cleared, running from prd_analysis")
+    return await run_factory(state, store=store, on_progress=on_progress, on_event=on_event)
+
+
 async def approve_checkpoint(
     state: RunState,
     phase: Phase,
@@ -300,4 +337,10 @@ async def _emit(cb: ProgressCallback | None, state: RunState, phase: Phase, stat
         await result
 
 
-__all__ = ["approve_checkpoint", "create_run", "resume_run", "run_factory"]
+__all__ = [
+    "approve_checkpoint",
+    "create_run",
+    "restart_run",
+    "resume_run",
+    "run_factory",
+]
