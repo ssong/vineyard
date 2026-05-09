@@ -40,9 +40,9 @@ class UserFlow(BaseModel):
 
 
 class DesignOutput(PhaseOutput):
-    prd_markdown: str
+    prd_markdown: str = ""
     user_flows: list[UserFlow] = Field(default_factory=list)
-    features: list[FeatureSpec]
+    features: list[FeatureSpec] = Field(default_factory=list)
     ui_copy: dict[str, str] = Field(default_factory=dict)
     clarification_qa: list[ClarificationQA] = Field(default_factory=list)
 
@@ -80,7 +80,7 @@ class EngineeringTask(BaseModel):
 
 
 class SpecOutput(PhaseOutput):
-    technical_spec_markdown: str
+    technical_spec_markdown: str = ""
     api_endpoints: list[APIEndpoint] = Field(default_factory=list)
     database_schema: list[DatabaseTable] = Field(default_factory=list)
     task_breakdown: list[EngineeringTask] = Field(default_factory=list)
