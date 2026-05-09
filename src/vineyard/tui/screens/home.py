@@ -20,15 +20,16 @@ _STATUS_EMOJI = {
 
 
 class HomeScreen(Screen):
-    BINDINGS = [
-        Binding("enter", "open_selected", "Open"),
-        Binding("r", "refresh", "Refresh"),
-    ]
+    BINDINGS = [Binding("r", "refresh", "Refresh")]
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield Static("Runs (n: new · enter: open · r: refresh)", classes="section-title")
+        yield Static(
+            "Runs (n: new · enter or click to open · r: refresh)",
+            classes="section-title",
+        )
         yield Container(DataTable(id="run-table"))
+        yield Static("", id="empty-msg", classes="muted")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -41,10 +42,12 @@ class HomeScreen(Screen):
         store = RunStore()
         rows = store.list()
         table: DataTable = self.query_one("#run-table", DataTable)
+        empty: Static = self.query_one("#empty-msg", Static)
         table.clear()
         if not rows:
-            table.add_row("—", "(no runs yet — press n to create one)", "—", "—", "—", "—", "—")
+            empty.update("(no runs yet — press n to create one)")
             return
+        empty.update("")
         for row in rows:
             emoji = _STATUS_EMOJI.get(row["status"], "·")
             table.add_row(
@@ -55,20 +58,12 @@ class HomeScreen(Screen):
                 row["started_at"][:19].replace("T", " "),
                 f"${row['cost_usd']:.4f}",
                 row["run_id"][:8],
+                key=row["run_id"],
             )
 
-    def action_open_selected(self) -> None:
-        table: DataTable = self.query_one("#run-table", DataTable)
-        if table.row_count == 0:
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        run_id = getattr(event.row_key, "value", None) or str(event.row_key)
+        if not run_id:
             return
-        try:
-            row = table.get_row_at(table.cursor_row)
-        except Exception:
-            return
-        run_id_short = row[-1]
-        store = RunStore()
-        for entry in store.list():
-            if entry["run_id"].startswith(run_id_short):
-                from vineyard.tui.screens.run_detail import RunDetailScreen
-                self.app.push_screen(RunDetailScreen(entry["run_id"]))
-                return
+        from vineyard.tui.screens.run_detail import RunDetailScreen
+        self.app.push_screen(RunDetailScreen(run_id))
