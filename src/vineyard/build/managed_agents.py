@@ -1,113 +1,18 @@
-"""Beta BUILD executor: Anthropic Claude Agent SDK.
+"""Backwards-compatible alias for the cloud Outcomes executor.
 
-The SDK runs the agent with built-in file tools (Read/Write/Edit) inside the
-configured ``cwd``. We hand it the spec, let it work, then walk the build dir
-for the generated file list. ``ResultMessage.total_cost_usd`` gives us
-authoritative cost tracking.
+The ``managed_agents`` executor used to run the *local* Claude Agent SDK
+(``claude_agent_sdk.query``), which has no Outcomes support. It now means the
+cloud Managed Agents + Outcomes platform (``anthropic.beta.sessions``), where a
+separate grader agent scores the build against the stack rubric and the worker
+iterates until the verdict is terminal.
 
-Outcomes (beta): the long-horizon grader Anthropic exposes for managed agents.
-The hookpoint is marked below — wire ``task_budget`` / ``output_format`` once
-the Outcomes API surface is final.
+Implementation lives in :mod:`vineyard.build.outcomes_exec`; this module keeps
+the old import path working.
 """
 
-from __future__ import annotations
+from vineyard.build.outcomes_exec import OutcomesExecutor
 
-from pathlib import Path
+# Old name kept so existing imports / the factory don't break.
+ManagedAgentsExecutor = OutcomesExecutor
 
-import logfire
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ResultMessage,
-    TextBlock,
-    ToolUseBlock,
-    query,
-)
-
-from vineyard.build.executor import BuildContext
-from vineyard.build.prompts import compose_system_prompt, compose_user_prompt
-from vineyard.config import settings
-from vineyard.models import BuildOutput, GeneratedFile
-
-_LANG_BY_EXT: dict[str, str] = {
-    ".py": "python", ".rb": "ruby", ".ts": "typescript", ".tsx": "typescript",
-    ".js": "javascript", ".jsx": "javascript", ".css": "css", ".html": "html",
-    ".json": "json", ".md": "markdown", ".yml": "yaml", ".yaml": "yaml",
-    ".sql": "sql", ".sh": "shell", ".toml": "toml", ".env": "dotenv",
-}
-
-
-class ManagedAgentsExecutor:
-    async def run(self, ctx: BuildContext) -> BuildOutput:
-        build_dir = ctx.build_dir
-        build_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-        env: dict[str, str] = {}
-        if settings.anthropic_api_key:
-            env["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
-
-        options = ClaudeAgentOptions(
-            cwd=str(build_dir),
-            system_prompt=compose_system_prompt(ctx),
-            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-            permission_mode="bypassPermissions",
-            env=env,
-            # TODO(beta/Outcomes): wire `task_budget=` and `output_format=` once
-            # the Managed Agents Outcomes API surface stabilizes — that's the
-            # whole point of opting into this executor.
-        )
-
-        cost = 0.0
-        narration: list[str] = []
-
-        with logfire.span("build.managed_agents", run_id=ctx.state.run_id):
-            async for msg in query(prompt=compose_user_prompt(ctx), options=options):
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            narration.append(block.text)
-                            await ctx.emit("agent", _truncate(block.text))
-                        elif isinstance(block, ToolUseBlock):
-                            await ctx.emit("tool", _format_tool_use(block))
-                elif isinstance(msg, ResultMessage):
-                    if msg.total_cost_usd:
-                        cost = float(msg.total_cost_usd)
-
-        files = _collect_files(build_dir)
-        summary = "\n\n".join(narration)[-2000:] or "(no narration captured)"
-
-        return BuildOutput(
-            files=files,
-            summary=summary,
-            grader_result="satisfied" if files else "needs_revision",
-            grader_explanation="Outcomes grading not yet wired — beta hookpoint pending.",
-            iterations=1,
-            cost_usd=cost,
-        )
-
-
-def _collect_files(build_dir: Path) -> list[GeneratedFile]:
-    out: list[GeneratedFile] = []
-    for p in sorted(build_dir.rglob("*")):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(build_dir).as_posix()
-        out.append(GeneratedFile(path=rel, language=_LANG_BY_EXT.get(p.suffix, "text")))
-    return out
-
-
-def _truncate(text: str, limit: int = 200) -> str:
-    text = text.strip().replace("\n", " ")
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _format_tool_use(block: ToolUseBlock) -> str:
-    name = block.name
-    args = block.input or {}
-    if name in ("Write", "Edit") and "file_path" in args:
-        return f"{name} {args['file_path']}"
-    if name == "Read" and "file_path" in args:
-        return f"Read {args['file_path']}"
-    if name in ("Glob", "Grep") and "pattern" in args:
-        return f"{name} {args['pattern']!r}"
-    return name
+__all__ = ["ManagedAgentsExecutor", "OutcomesExecutor"]

@@ -109,12 +109,27 @@ vineyard config [key] [value]  # show or set config
 routed through the Pydantic AI Gateway. Cost computed from token counts using
 Anthropic list pricing.
 
-`managed_agents` (beta): the Claude Agent SDK (`claude-agent-sdk`) running
-locally with built-in `Read` / `Write` / `Edit` / `Glob` / `Grep` tools.
-Cost surfaced authoritatively from `ResultMessage.total_cost_usd`. Marked as
-the wire-up point for Anthropic Outcomes when its API surface stabilizes.
+`managed_agents` (beta): Anthropic's cloud **Managed Agents + Outcomes**
+platform (`anthropic.beta.sessions`, `managed-agents-2026-04-01` beta). The
+build is defined as an *outcome* — a deliverable description plus the stack's
+`rubric.md` — and a separate grader agent scores the generated codebase against
+the rubric in an isolated context, iterating until the verdict is terminal
+(`satisfied` / `max_iterations_reached` / `failed`). Generated files are
+downloaded back into `output/build/`. Because Outcomes already grades against
+the rubric, the separate QA pass is skipped for this executor.
 
-Toggle from the new-run screen or pass `--executor managed_agents` on the CLI.
+Requires `VINEYARD_ANTHROPIC_API_KEY` and Outcomes beta access on the account.
+Toggle from the new-run screen or pass `--executor managed_agents`.
+
+Observability: the Managed Agents endpoints aren't proxied through the Pydantic
+AI Gateway, so the Anthropic SDK is instrumented directly with
+`logfire.instrument_anthropic()` — spans, token usage, and cost still land in
+the same Logfire project as the rest of the pipeline.
+
+Cost levers (all in config): `outcomes_max_iterations` (default 3, max 20),
+`outcomes_agent_id` / `outcomes_environment_id` to reuse a pre-created agent and
+environment across runs, and `outcomes_reuse_environment` (default on). Sessions
+are always torn down after each run.
 
 ## Validate phase
 

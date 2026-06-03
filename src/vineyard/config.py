@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     # set to None to disable, or raise for larger projects.
     run_cost_cap_usd: float | None = 5.0
 
+    # --- managed_agents (cloud Outcomes) executor ---
+    # Model the Outcomes worker agent runs on.
+    outcomes_model: str = "claude-opus-4-7"
+    # Eval→revision cycles the grader allows before giving up (SDK max 20).
+    outcomes_max_iterations: int = 3
+    # Reuse a pre-created agent definition across runs (cost lever — avoids
+    # re-creating the agent each run). Empty means create one per run.
+    outcomes_agent_id: str = ""
+    # Reuse a single cloud environment across runs (fresh session per run
+    # still gives a clean filesystem; reusing the env avoids re-provision cost).
+    outcomes_reuse_environment: bool = True
+    # Existing environment ID to reuse when outcomes_reuse_environment is set.
+    outcomes_environment_id: str = ""
+
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "INFO"
 

@@ -70,7 +70,7 @@ def get_executor(name: ExecutorName | None = None) -> Executor:
         return PydanticAIExecutor()
 
     if chosen == "managed_agents":
-        from vineyard.build.managed_agents import ManagedAgentsExecutor
-        return ManagedAgentsExecutor()
+        from vineyard.build.outcomes_exec import OutcomesExecutor
+        return OutcomesExecutor()
 
     raise ValueError(f"Unknown executor: {chosen!r}")

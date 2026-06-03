@@ -27,6 +27,8 @@ def isolated_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "vineyard.build.executor",
         "vineyard.build.pydantic_ai_exec",
         "vineyard.build.managed_agents",
+        "vineyard.build.outcomes_client",
+        "vineyard.build.outcomes_exec",
     ):
         try:
             mod = __import__(mod_path, fromlist=["settings"])

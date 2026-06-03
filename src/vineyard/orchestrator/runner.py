@@ -27,6 +27,7 @@ from vineyard.models import (
     Phase,
     PhaseStatus,
     PRDAnalysisOutput,
+    QAOutput,
     RunState,
     SpecOutput,
     ValidationOutput,
@@ -368,21 +369,38 @@ async def _run_validate_loop(
         )
 
         if result.success:
-            # Final successful build — run QA once, bundle and return.
-            qa = qa_agent(profile)
-            await emit_event(on_event, "agent", "qa: validating against rubric…")
-            qa_result = await qa.run(build_qa_prompt(spec, last_build))
-            _track_cost(state, qa_result, role="judge")
-            await emit_event(
-                on_event,
-                "agent",
-                f"qa: done · {len(qa_result.output.issues_found)} issues",
-            )
+            # Final successful build. Run QA once to score against the rubric —
+            # UNLESS the Outcomes (managed_agents) executor already graded the
+            # build against that same rubric, in which case a separate QA agent
+            # pass is redundant spend. We reuse the Outcomes grader verdict.
+            if state.handoff.executor == "managed_agents":
+                qa_output = QAOutput(
+                    summary=(
+                        f"Outcomes grader: {last_build.grader_result} — "
+                        f"{last_build.grader_explanation}"
+                    )
+                )
+                await emit_event(
+                    on_event,
+                    "agent",
+                    f"qa: using Outcomes grader verdict ({last_build.grader_result})",
+                )
+            else:
+                qa = qa_agent(profile)
+                await emit_event(on_event, "agent", "qa: validating against rubric…")
+                qa_result = await qa.run(build_qa_prompt(spec, last_build))
+                _track_cost(state, qa_result, role="judge")
+                qa_output = qa_result.output
+                await emit_event(
+                    on_event,
+                    "agent",
+                    f"qa: done · {len(qa_output.issues_found)} issues",
+                )
             # Update BUILD phase output with the final build + qa, so the
             # build card reflects the QA result the user inspects in the UI.
             state.store_output(
                 Phase.BUILD,
-                {"build": last_build, "qa": qa_result.output},
+                {"build": last_build, "qa": qa_output},
             )
             return result
 
